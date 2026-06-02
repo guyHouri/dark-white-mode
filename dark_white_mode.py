@@ -50,12 +50,14 @@ def config_path() -> Path:
 
 
 DEFAULT_CONFIG = {
+    "config_version": 2,
     "windows_theme": True,
     "chrome_force_dark": True,
     "brightness": True,
     "flux": True,
-    "prompt_before_closing_chrome": True,
+    "prompt_before_closing_chrome": False,
     "reopen_chrome_after_flag": True,
+    "restore_chrome_pages": True,
     "dark_brightness": 1,
     "white_brightness": 70,
     "dark_flux_kelvin": 1200,
@@ -74,6 +76,11 @@ def load_config() -> dict:
         return dict(DEFAULT_CONFIG)
     merged = dict(DEFAULT_CONFIG)
     merged.update({k: v for k, v in data.items() if k in DEFAULT_CONFIG})
+    if int(data.get("config_version", 1)) < 2:
+        merged["config_version"] = 2
+        merged["prompt_before_closing_chrome"] = False
+        merged["reopen_chrome_after_flag"] = True
+        merged["restore_chrome_pages"] = True
     return merged
 
 
@@ -234,18 +241,22 @@ def find_chrome_exe() -> Path | None:
     return None
 
 
-def reopen_chrome() -> StepResult:
+def reopen_chrome(restore_pages: bool = True) -> StepResult:
     chrome_exe = find_chrome_exe()
     if not chrome_exe:
         return StepResult("Chrome", False, "Chrome flag changed, but chrome.exe was not found to reopen it.")
     try:
+        command = [str(chrome_exe)]
+        if restore_pages:
+            command.append("--restore-last-session")
         subprocess.Popen(
-            [str(chrome_exe)],
+            command,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             creationflags=CREATE_NO_WINDOW,
         )
-        return StepResult("Chrome", True, "Chrome reopened.")
+        message = "Chrome reopened with restore-last-session." if restore_pages else "Chrome reopened."
+        return StepResult("Chrome", True, message)
     except Exception as exc:
         return StepResult("Chrome", False, f"Chrome flag changed, but reopen failed: {exc}")
 
@@ -290,7 +301,7 @@ def update_chrome_state_data(state: dict, enable: bool) -> dict:
     return state
 
 
-def set_chrome_force_dark(enable: bool, reopen_after: bool = False) -> StepResult:
+def set_chrome_force_dark(enable: bool, reopen_after: bool = False, restore_pages: bool = True) -> StepResult:
     path = chrome_local_state_path()
     if not path:
         return StepResult("Chrome", False, "Chrome Local State file was not found.")
@@ -308,9 +319,9 @@ def set_chrome_force_dark(enable: bool, reopen_after: bool = False) -> StepResul
     action = "enabled" if enable else "removed"
     message = f"Chrome force-dark flag {action}."
     if reopen_after:
-        reopen_result = reopen_chrome()
+        reopen_result = reopen_chrome(restore_pages)
         if reopen_result.ok:
-            message += " Chrome reopened."
+            message += " " + reopen_result.message
         else:
             message += " " + reopen_result.message
     else:
@@ -595,7 +606,7 @@ class DarkWhiteModeApp(tk.Tk):
         self.vars["prompt_before_closing_chrome"] = chrome_var
         ttk.Checkbutton(
             root,
-            text="Prompt before closing Chrome",
+            text="Ask before closing Chrome",
             variable=chrome_var,
         ).grid(row=5, column=0, sticky="w", pady=(0, 12))
 
@@ -607,9 +618,17 @@ class DarkWhiteModeApp(tk.Tk):
             variable=reopen_chrome_var,
         ).grid(row=6, column=0, sticky="w", pady=(0, 12))
 
+        restore_chrome_var = tk.BooleanVar(value=bool(self.config_data["restore_chrome_pages"]))
+        self.vars["restore_chrome_pages"] = restore_chrome_var
+        ttk.Checkbutton(
+            root,
+            text="Restore Chrome pages automatically",
+            variable=restore_chrome_var,
+        ).grid(row=7, column=0, sticky="w", pady=(0, 12))
+
         status_frame = ttk.LabelFrame(root, text="Status", padding=8)
-        status_frame.grid(row=7, column=0, sticky="nsew")
-        root.rowconfigure(7, weight=1)
+        status_frame.grid(row=8, column=0, sticky="nsew")
+        root.rowconfigure(8, weight=1)
         status_frame.columnconfigure(0, weight=1)
         status_frame.rowconfigure(0, weight=1)
 
@@ -625,7 +644,7 @@ class DarkWhiteModeApp(tk.Tk):
         scrollbar = ttk.Scrollbar(status_frame, orient="vertical", command=self.status_text.yview)
         scrollbar.grid(row=0, column=1, sticky="ns")
         self.status_text.configure(yscrollcommand=scrollbar.set)
-        ttk.Label(root, text=CREDIT_TEXT).grid(row=8, column=0, sticky="w", pady=(10, 0))
+        ttk.Label(root, text=CREDIT_TEXT).grid(row=9, column=0, sticky="w", pady=(10, 0))
         self.log("Ready.")
 
     def start_tray_icon(self):
@@ -727,6 +746,7 @@ class DarkWhiteModeApp(tk.Tk):
             "flux",
             "prompt_before_closing_chrome",
             "reopen_chrome_after_flag",
+            "restore_chrome_pages",
         ):
             settings[key] = bool(self.vars[key].get())
         settings["dark_brightness"] = clamp_int(self.vars["dark_brightness"].get(), 0, 100, 1)
@@ -764,6 +784,7 @@ class DarkWhiteModeApp(tk.Tk):
                 if close_result.ok:
                     settings = dict(settings)
                     settings["_reopen_chrome_after_flag"] = settings["reopen_chrome_after_flag"]
+                    settings["_restore_chrome_pages"] = settings["restore_chrome_pages"]
                 else:
                     self.log("Chrome flag will be skipped because Chrome did not close.")
                     settings = dict(settings)
@@ -785,7 +806,13 @@ class DarkWhiteModeApp(tk.Tk):
             level = settings["dark_brightness"] if target_dark else settings["white_brightness"]
             results.append(set_brightness(level))
         if settings["chrome_force_dark"]:
-            results.append(set_chrome_force_dark(target_dark, bool(settings.get("_reopen_chrome_after_flag"))))
+            results.append(
+                set_chrome_force_dark(
+                    target_dark,
+                    bool(settings.get("_reopen_chrome_after_flag")),
+                    bool(settings.get("_restore_chrome_pages", settings.get("restore_chrome_pages", True))),
+                )
+            )
         if settings["flux"]:
             kelvin = settings["dark_flux_kelvin"] if target_dark else settings["white_flux_kelvin"]
             results.append(set_flux_kelvin(kelvin))
@@ -829,6 +856,7 @@ def self_test() -> int:
     assert clamp_int("bad", 0, 100, 7) == 7
     assert parse_flux_run_value(r'"C:\Users\me\AppData\Local\FluxSoftware\Flux\flux.exe" /noshow')
     assert "reopen_chrome_after_flag" in load_config()
+    assert "restore_chrome_pages" in load_config()
     image = create_tray_image()
     assert image is not None and image.size == (64, 64)
     print("self-test ok")

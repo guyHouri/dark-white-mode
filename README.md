@@ -14,7 +14,7 @@ Credits: Guy Houri
 
 ## Notes
 
-- Chrome must be closed before the flag file can be changed reliably. The app can close Chrome, force-close background Chrome processes if needed, update the flag, and reopen Chrome.
+- Chrome must be closed before the flag file can be changed reliably. By default, the app closes Chrome automatically, force-closes background Chrome processes if needed, updates the flag, reopens Chrome, and asks Chrome to restore the previous session.
 - Closing or minimizing the window keeps the app running in the Windows system tray or hidden-icons overflow menu. Use the tray menu's Quit action to fully exit.
 - Brightness control depends on the display. Laptop panels usually work through WMI; many external monitors need DDC/CI enabled in the monitor menu.
 - f.lux does not provide a stable public command-line preset API, so this app uses the per-user f.lux preference registry values: `Outdoor`, `Indoor`, and `Late`.
