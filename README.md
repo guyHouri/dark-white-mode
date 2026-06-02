@@ -1,14 +1,14 @@
 # dark-white-mode
 
-`dark-white-mode` is a small Windows utility that toggles a computer between a dark/low-light profile and a white/daylight profile.
+`dark-white-mode` is a small desktop utility that toggles a computer between a dark/low-light profile and a white/daylight profile.
 
 Credits: Guy Houri
 
 ## What the button changes
 
-- Windows app and system theme through the current user's theme registry keys.
+- Windows/macOS system dark and light appearance.
 - The app window's own dark/white theme, either with the main toggle or with the separate App Theme button.
-- Windows startup registration, so the app can launch automatically after restart and start minimized to the tray.
+- Windows/macOS startup registration, so the app can launch automatically after restart and start minimized to the tray/menu bar.
 - Chrome's `chrome://flags` force-dark experiment by editing Chrome's per-user `Local State` file.
 - Display brightness through Windows WMI and DDC/CI monitor control where supported.
 - f.lux color temperature by updating the current user's f.lux registry values and restarting `flux.exe`.
@@ -18,10 +18,18 @@ Credits: Guy Houri
 
 - Chrome must be closed before the flag file can be changed reliably. By default, the app closes Chrome automatically, force-closes background Chrome processes if needed, updates the flag, sets each Chrome profile to continue where it left off, suppresses Chrome's crash-restore bubble where supported, and reopens Chrome.
 - Closing or minimizing the window keeps the app running in the Windows system tray or hidden-icons overflow menu. Use the tray menu's Quit action to fully exit.
-- Startup is enabled by default. The app registers itself under the current user's Windows startup apps and launches with `--startup`, which starts it minimized to the tray.
-- Brightness control depends on the display. Laptop panels usually work through WMI; many external monitors need DDC/CI enabled in the monitor menu.
-- f.lux does not provide a stable public command-line preset API, so this app uses the per-user f.lux preference registry values: `Outdoor`, `Indoor`, and `Late`.
-- The app works per Windows user and normally does not need administrator rights.
+- Startup is enabled by default. On Windows the app registers itself under the current user's startup apps. On macOS it writes a per-user LaunchAgent. Both launch with `--startup`, which starts minimized to the tray/menu bar.
+- Brightness control depends on the display. Windows uses WMI and DDC/CI where supported. macOS requires the optional Homebrew `brightness` tool.
+- f.lux does not provide a stable public command-line preset API. Windows uses the per-user f.lux preference registry values: `Outdoor`, `Indoor`, and `Late`. macOS f.lux Kelvin switching is not supported yet.
+- The app works per desktop user and normally does not need administrator rights.
+
+## macOS
+
+The macOS build is produced and tested by GitHub Actions on a real macOS runner. The app is currently unsigned, so macOS Gatekeeper may require right-clicking the app and choosing Open, or removing quarantine with:
+
+```bash
+xattr -dr com.apple.quarantine dark-white-mode.app
+```
 
 ## Build
 
@@ -35,6 +43,12 @@ The distributable executable is created at:
 
 ```text
 dist\dark-white-mode.exe
+```
+
+GitHub Actions also builds a macOS app zip:
+
+```text
+dark-white-mode-macos.zip
 ```
 
 ## Developer Test

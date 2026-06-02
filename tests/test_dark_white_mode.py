@@ -1,4 +1,5 @@
 import json
+import plistlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -121,6 +122,19 @@ class MiscTests(unittest.TestCase):
         command = app.build_startup_command([r"C:\Program Files\dark-white-mode\dark-white-mode.exe"], False)
 
         self.assertEqual(command, r'"C:\Program Files\dark-white-mode\dark-white-mode.exe"')
+
+    def test_macos_launch_agent_arguments_include_startup(self):
+        arguments = app.macos_launch_agent_program_arguments(["/Applications/dark-white-mode.app/Contents/MacOS/dark-white-mode"], True)
+
+        self.assertEqual(arguments[-1], "--startup")
+
+    def test_macos_launch_agent_plist_is_valid(self):
+        payload = app.build_macos_launch_agent_plist(["/Applications/dark-white-mode.app/Contents/MacOS/dark-white-mode"], True)
+        decoded = plistlib.loads(payload)
+
+        self.assertEqual(decoded["Label"], "com.guyhouri.dark-white-mode")
+        self.assertTrue(decoded["RunAtLoad"])
+        self.assertIn("--startup", decoded["ProgramArguments"])
 
 
 if __name__ == "__main__":

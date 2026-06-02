@@ -1,6 +1,7 @@
 import ctypes
 import json
 import os
+import plistlib
 import queue
 import re
 import shutil
@@ -9,10 +10,14 @@ import sys
 import threading
 import time
 import tkinter as tk
-import winreg
 from dataclasses import dataclass
 from pathlib import Path
 from tkinter import messagebox, ttk
+
+if sys.platform == "win32":
+    import winreg
+else:
+    winreg = None
 
 try:
     import pystray
@@ -25,6 +30,8 @@ except ImportError:
 
 APP_NAME = "dark-white-mode"
 CREDIT_TEXT = "Credits: Guy Houri"
+IS_WINDOWS = sys.platform == "win32"
+IS_MAC = sys.platform == "darwin"
 CREATE_NO_WINDOW = 0x08000000
 WM_SETTINGCHANGE = 0x001A
 HWND_BROADCAST = 0xFFFF
@@ -39,7 +46,12 @@ class StepResult:
 
 
 def app_data_dir() -> Path:
-    base = Path(os.environ.get("APPDATA", str(Path.home())))
+    if IS_WINDOWS:
+        base = Path(os.environ.get("APPDATA", str(Path.home())))
+    elif IS_MAC:
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
     path = base / APP_NAME
     path.mkdir(parents=True, exist_ok=True)
     return path
@@ -145,6 +157,18 @@ def save_config(config: dict) -> None:
     config_path().write_text(json.dumps(config, indent=2), encoding="utf-8")
 
 
+def platform_name() -> str:
+    if IS_WINDOWS:
+        return "Windows"
+    if IS_MAC:
+        return "macOS"
+    return sys.platform
+
+
+def startup_label() -> str:
+    return "Start with macOS" if IS_MAC else "Start with Windows"
+
+
 def quote_command_part(value: str | Path) -> str:
     return '"' + str(value).replace('"', r'\"') + '"'
 
@@ -166,7 +190,33 @@ def startup_registry_command(minimized_to_tray: bool = True) -> str:
     return build_startup_command(app_launch_command_parts(), minimized_to_tray)
 
 
+def macos_launch_agent_label() -> str:
+    return "com.guyhouri.dark-white-mode"
+
+
+def macos_launch_agent_path() -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{macos_launch_agent_label()}.plist"
+
+
+def macos_launch_agent_program_arguments(command_parts: list[str], minimized_to_tray: bool = True) -> list[str]:
+    parts = [str(part) for part in command_parts]
+    if minimized_to_tray:
+        parts.append("--startup")
+    return parts
+
+
+def build_macos_launch_agent_plist(command_parts: list[str], minimized_to_tray: bool = True) -> bytes:
+    payload = {
+        "Label": macos_launch_agent_label(),
+        "ProgramArguments": macos_launch_agent_program_arguments(command_parts, minimized_to_tray),
+        "RunAtLoad": True,
+    }
+    return plistlib.dumps(payload, sort_keys=True)
+
+
 def set_windows_startup(enabled: bool, minimized_to_tray: bool = True) -> StepResult:
+    if not IS_WINDOWS or winreg is None:
+        return StepResult("Startup", False, "Windows startup is only available on Windows.")
     try:
         key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
         with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
@@ -181,6 +231,30 @@ def set_windows_startup(enabled: bool, minimized_to_tray: bool = True) -> StepRe
         return StepResult("Startup", True, message)
     except Exception as exc:
         return StepResult("Startup", False, f"Windows startup update failed: {exc}")
+
+
+def set_macos_startup(enabled: bool, minimized_to_tray: bool = True) -> StepResult:
+    if not IS_MAC:
+        return StepResult("Startup", False, "macOS startup is only available on macOS.")
+    try:
+        path = macos_launch_agent_path()
+        if enabled:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(build_macos_launch_agent_plist(app_launch_command_parts(), minimized_to_tray))
+            return StepResult("Startup", True, "Enabled macOS startup LaunchAgent.")
+        if path.exists():
+            path.unlink()
+        return StepResult("Startup", True, "Disabled macOS startup LaunchAgent.")
+    except Exception as exc:
+        return StepResult("Startup", False, f"macOS startup update failed: {exc}")
+
+
+def set_platform_startup(enabled: bool, minimized_to_tray: bool = True) -> StepResult:
+    if IS_WINDOWS:
+        return set_windows_startup(enabled, minimized_to_tray)
+    if IS_MAC:
+        return set_macos_startup(enabled, minimized_to_tray)
+    return StepResult("Startup", False, f"Startup is not supported on {platform_name()}.")
 
 
 def clamp_int(value, minimum: int, maximum: int, fallback: int) -> int:
@@ -219,6 +293,8 @@ def read_windows_mode() -> str:
 
 
 def set_windows_mode(dark: bool) -> StepResult:
+    if not IS_WINDOWS or winreg is None:
+        return StepResult("System", False, "Windows theme is only available on Windows.")
     try:
         key_path = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
         with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
@@ -231,25 +307,86 @@ def set_windows_mode(dark: bool) -> StepResult:
         return StepResult("Windows", False, f"Windows theme failed: {exc}")
 
 
+def read_macos_mode() -> str:
+    try:
+        completed = run_hidden(["defaults", "read", "-g", "AppleInterfaceStyle"], timeout=6)
+    except Exception:
+        return "white"
+    return "dark" if completed.returncode == 0 and "Dark" in completed.stdout else "white"
+
+
+def set_macos_mode(dark: bool) -> StepResult:
+    value = "true" if dark else "false"
+    script = f'tell application "System Events" to tell appearance preferences to set dark mode to {value}'
+    try:
+        completed = run_hidden(["osascript", "-e", script], timeout=12)
+        if completed.returncode == 0:
+            return StepResult("System", True, "macOS appearance set to dark." if dark else "macOS appearance set to light.")
+        message = (completed.stderr or completed.stdout or "").strip()
+        return StepResult("System", False, "macOS appearance update failed. " + message)
+    except Exception as exc:
+        return StepResult("System", False, f"macOS appearance update failed: {exc}")
+
+
+def read_system_mode() -> str:
+    if IS_MAC:
+        return read_macos_mode()
+    return read_windows_mode()
+
+
+def set_system_mode(dark: bool) -> StepResult:
+    if IS_MAC:
+        return set_macos_mode(dark)
+    return set_windows_mode(dark)
+
+
 def run_hidden(command, timeout=12):
+    kwargs = {}
+    if IS_WINDOWS:
+        kwargs["creationflags"] = CREATE_NO_WINDOW
     return subprocess.run(
         command,
         capture_output=True,
         text=True,
         timeout=timeout,
-        creationflags=CREATE_NO_WINDOW,
+        **kwargs,
     )
 
 
+def popen_hidden(command):
+    kwargs = {
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+    if IS_WINDOWS:
+        kwargs["creationflags"] = CREATE_NO_WINDOW
+    return subprocess.Popen(command, **kwargs)
+
+
 def is_process_running(image_name: str) -> bool:
+    if IS_WINDOWS:
+        try:
+            completed = run_hidden(
+                ["tasklist", "/FI", f"IMAGENAME eq {image_name}", "/NH"],
+                timeout=6,
+            )
+        except Exception:
+            return False
+        return image_name.lower() in completed.stdout.lower()
+
     try:
-        completed = run_hidden(
-            ["tasklist", "/FI", f"IMAGENAME eq {image_name}", "/NH"],
-            timeout=6,
-        )
+        completed = run_hidden(["pgrep", "-x", image_name], timeout=6)
     except Exception:
         return False
-    return image_name.lower() in completed.stdout.lower()
+    return completed.returncode == 0
+
+
+def chrome_process_name() -> str:
+    return "chrome.exe" if IS_WINDOWS else "Google Chrome"
+
+
+def is_chrome_running() -> bool:
+    return is_process_running(chrome_process_name())
 
 
 def wait_for_process_exit(image_name: str, timeout_seconds: int) -> bool:
@@ -262,8 +399,27 @@ def wait_for_process_exit(image_name: str, timeout_seconds: int) -> bool:
 
 
 def close_chrome_for_flag() -> StepResult:
-    if not is_process_running("chrome.exe"):
+    if not is_chrome_running():
         return StepResult("Chrome", True, "Chrome was already closed.")
+
+    if IS_MAC:
+        messages = []
+        try:
+            run_hidden(["osascript", "-e", 'tell application "Google Chrome" to quit'], timeout=8)
+            messages.append("Asked Chrome to quit.")
+        except Exception as exc:
+            messages.append(f"AppleScript quit failed: {exc}")
+        if wait_for_process_exit(chrome_process_name(), 10):
+            return StepResult("Chrome", True, "Chrome closed.")
+
+        try:
+            run_hidden(["pkill", "-x", "Google Chrome"], timeout=8)
+            messages.append("Forced remaining Chrome processes to close.")
+        except Exception as exc:
+            messages.append(f"Forced close failed: {exc}")
+        if wait_for_process_exit(chrome_process_name(), 8):
+            return StepResult("Chrome", True, "Chrome closed after forcing remaining processes.")
+        return StepResult("Chrome", False, "Chrome is still running. " + " ".join(messages))
 
     messages = []
     try:
@@ -271,7 +427,7 @@ def close_chrome_for_flag() -> StepResult:
         messages.append("Asked Chrome to close.")
     except Exception as exc:
         messages.append(f"Graceful close failed: {exc}")
-    if wait_for_process_exit("chrome.exe", 10):
+    if wait_for_process_exit(chrome_process_name(), 10):
         return StepResult("Chrome", True, "Chrome closed.")
 
     try:
@@ -279,7 +435,7 @@ def close_chrome_for_flag() -> StepResult:
         messages.append("Forced remaining Chrome processes to close.")
     except Exception as exc:
         messages.append(f"Forced close failed: {exc}")
-    if wait_for_process_exit("chrome.exe", 8):
+    if wait_for_process_exit(chrome_process_name(), 8):
         return StepResult("Chrome", True, "Chrome closed after forcing remaining processes.")
 
     script = "Get-Process chrome -ErrorAction SilentlyContinue | Stop-Process -Force"
@@ -292,12 +448,22 @@ def close_chrome_for_flag() -> StepResult:
     except Exception as exc:
         messages.append(f"PowerShell fallback failed: {exc}")
 
-    if wait_for_process_exit("chrome.exe", 5):
+    if wait_for_process_exit(chrome_process_name(), 5):
         return StepResult("Chrome", True, "Chrome closed after fallback.")
     return StepResult("Chrome", False, "Chrome is still running. " + " ".join(messages))
 
 
 def find_chrome_exe() -> Path | None:
+    if IS_MAC:
+        candidates = [
+            Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+            Path.home() / "Applications" / "Google Chrome.app" / "Contents" / "MacOS" / "Google Chrome",
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        return None
+
     candidates = []
     local_app_data = os.environ.get("LOCALAPPDATA")
     program_files = os.environ.get("PROGRAMFILES")
@@ -348,12 +514,7 @@ def reopen_chrome(restore_pages: bool = True) -> StepResult:
     if not chrome_exe:
         return StepResult("Chrome", False, "Chrome flag changed, but chrome.exe was not found to reopen it.")
     try:
-        subprocess.Popen(
-            build_chrome_reopen_command(chrome_exe, restore_pages),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=CREATE_NO_WINDOW,
-        )
+        popen_hidden(build_chrome_reopen_command(chrome_exe, restore_pages))
         message = "Chrome reopened with session restore requested." if restore_pages else "Chrome reopened."
         return StepResult("Chrome", True, message)
     except Exception as exc:
@@ -375,6 +536,10 @@ def create_tray_image():
 
 
 def chrome_local_state_path() -> Path | None:
+    if IS_MAC:
+        path = Path.home() / "Library" / "Application Support" / "Google" / "Chrome" / "Local State"
+        return path if path.exists() else None
+
     local_app_data = os.environ.get("LOCALAPPDATA")
     if not local_app_data:
         return None
@@ -383,6 +548,10 @@ def chrome_local_state_path() -> Path | None:
 
 
 def chrome_user_data_dir() -> Path | None:
+    if IS_MAC:
+        path = Path.home() / "Library" / "Application Support" / "Google" / "Chrome"
+        return path if path.exists() else None
+
     local_app_data = os.environ.get("LOCALAPPDATA")
     if not local_app_data:
         return None
@@ -613,6 +782,9 @@ def set_brightness_ddc(level: int) -> tuple[bool, str]:
 
 
 def set_brightness(level: int) -> StepResult:
+    if IS_MAC:
+        return set_brightness_macos(level)
+
     level = clamp_int(level, 0, 100, 1)
     messages = []
     ok = False
@@ -630,6 +802,33 @@ def set_brightness(level: int) -> StepResult:
     return StepResult("Brightness", False, "Brightness was not changed. " + " ".join(messages))
 
 
+def find_command(candidates: list[str]) -> Path | None:
+    for candidate in candidates:
+        path = shutil.which(candidate)
+        if path:
+            return Path(path)
+    return None
+
+
+def set_brightness_macos(level: int) -> StepResult:
+    level = clamp_int(level, 0, 100, 1)
+    brightness_tool = find_command(["brightness"])
+    if not brightness_tool:
+        return StepResult(
+            "Brightness",
+            False,
+            "macOS brightness requires the optional 'brightness' command-line tool. Install it with Homebrew: brew install brightness.",
+        )
+    try:
+        completed = run_hidden([str(brightness_tool), str(level / 100)], timeout=10)
+        if completed.returncode == 0:
+            return StepResult("Brightness", True, f"Brightness set to {level}%.")
+        message = (completed.stderr or completed.stdout or "").strip()
+        return StepResult("Brightness", False, "macOS brightness update failed. " + message)
+    except Exception as exc:
+        return StepResult("Brightness", False, f"macOS brightness update failed: {exc}")
+
+
 def parse_flux_run_value(value: str) -> Path | None:
     quoted = re.search(r'"([^"]*flux\.exe)"', value, flags=re.IGNORECASE)
     if quoted:
@@ -639,6 +838,18 @@ def parse_flux_run_value(value: str) -> Path | None:
 
 
 def find_flux_exe() -> Path | None:
+    if IS_MAC:
+        candidates = [
+            Path("/Applications/Flux.app"),
+            Path("/Applications/f.lux.app"),
+            Path.home() / "Applications" / "Flux.app",
+            Path.home() / "Applications" / "f.lux.app",
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        return None
+
     candidates = []
     local_app_data = os.environ.get("LOCALAPPDATA")
     if local_app_data:
@@ -668,6 +879,19 @@ def find_flux_exe() -> Path | None:
 
 
 def set_flux_kelvin(kelvin: int) -> StepResult:
+    if IS_MAC:
+        flux_app = find_flux_exe()
+        if flux_app:
+            try:
+                run_hidden(["open", str(flux_app)], timeout=8)
+            except Exception:
+                pass
+        return StepResult(
+            "f.lux",
+            False,
+            "macOS f.lux Kelvin switching is not supported yet because f.lux does not expose a stable public preset API.",
+        )
+
     kelvin = clamp_int(kelvin, 800, 10000, 6500)
     key_path = r"Software\Michael Herf\flux\Preferences"
     try:
@@ -685,12 +909,7 @@ def set_flux_kelvin(kelvin: int) -> StepResult:
         if is_process_running("flux.exe"):
             run_hidden(["taskkill", "/IM", "flux.exe", "/F"], timeout=8)
             time.sleep(0.4)
-        subprocess.Popen(
-            [str(flux_exe), "/noshow"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=CREATE_NO_WINDOW,
-        )
+        popen_hidden([str(flux_exe), "/noshow"])
         return StepResult("f.lux", True, f"f.lux set to {kelvin}K and restarted.")
     except Exception as exc:
         return StepResult("f.lux", False, f"f.lux set to {kelvin}K, but restart failed: {exc}")
@@ -704,7 +923,7 @@ class DarkWhiteModeApp(tk.Tk):
         self.minsize(500, 720)
         self.config_data = load_config()
         self.start_hidden = start_hidden
-        self.current_mode = read_windows_mode()
+        self.current_mode = read_system_mode()
         self.vars = {}
         self.running = False
         self.quitting = False
@@ -754,7 +973,7 @@ class DarkWhiteModeApp(tk.Tk):
         for index, (key, label) in enumerate(
             [
                 ("app_window_theme", "App window theme"),
-                ("windows_theme", "Windows theme"),
+                ("windows_theme", "System theme"),
                 ("chrome_force_dark", "Chrome force-dark flag"),
                 ("brightness", "Display brightness"),
                 ("flux", "f.lux color temperature"),
@@ -780,7 +999,7 @@ class DarkWhiteModeApp(tk.Tk):
         self.vars["start_with_windows"] = startup_var
         ttk.Checkbutton(
             root,
-            text="Start with Windows",
+            text=startup_label(),
             variable=startup_var,
             command=self.sync_startup_setting,
         ).grid(row=6, column=0, sticky="w", pady=(0, 12))
@@ -1014,7 +1233,7 @@ class DarkWhiteModeApp(tk.Tk):
             self.config_data["start_minimized_to_tray"] = bool(self.vars["start_minimized_to_tray"].get())
         save_config(self.config_data)
 
-        result = set_windows_startup(
+        result = set_platform_startup(
             bool(self.config_data.get("start_with_windows")),
             bool(self.config_data.get("start_minimized_to_tray")),
         )
@@ -1081,7 +1300,7 @@ class DarkWhiteModeApp(tk.Tk):
             self.apply_app_theme()
             self.log(f"OK - App: App window theme set to {settings['app_theme']}.")
 
-        if settings["chrome_force_dark"] and is_process_running("chrome.exe"):
+        if settings["chrome_force_dark"] and is_chrome_running():
             close_now = True
             if settings["prompt_before_closing_chrome"]:
                 close_now = messagebox.askyesno(
@@ -1118,7 +1337,7 @@ class DarkWhiteModeApp(tk.Tk):
     def _apply_in_thread(self, target_dark: bool, settings: dict):
         results = []
         if settings["windows_theme"]:
-            results.append(set_windows_mode(target_dark))
+            results.append(set_system_mode(target_dark))
         if settings["brightness"]:
             level = settings["dark_brightness"] if target_dark else settings["white_brightness"]
             results.append(set_brightness(level))
@@ -1180,6 +1399,9 @@ def self_test() -> int:
     assert "app_window_theme" in load_config()
     assert "start_with_windows" in load_config()
     assert build_startup_command([r"C:\Program Files\App\dark-white-mode.exe"], True).endswith('" --startup')
+    launch_agent = plistlib.loads(build_macos_launch_agent_plist(["/Applications/dark-white-mode.app/Contents/MacOS/dark-white-mode"], True))
+    assert launch_agent["Label"] == macos_launch_agent_label()
+    assert "--startup" in launch_agent["ProgramArguments"]
     image = create_tray_image()
     assert image is not None and image.size == (64, 64)
     print("self-test ok")
