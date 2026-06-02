@@ -50,7 +50,7 @@ def config_path() -> Path:
 
 
 DEFAULT_CONFIG = {
-    "config_version": 2,
+    "config_version": 3,
     "windows_theme": True,
     "chrome_force_dark": True,
     "brightness": True,
@@ -66,6 +66,19 @@ DEFAULT_CONFIG = {
 }
 
 
+def merge_config_data(data: dict) -> dict:
+    merged = dict(DEFAULT_CONFIG)
+    merged.update({k: v for k, v in data.items() if k in DEFAULT_CONFIG})
+    if int(data.get("config_version", 1)) < 2:
+        merged["prompt_before_closing_chrome"] = False
+        merged["reopen_chrome_after_flag"] = True
+        merged["restore_chrome_pages"] = True
+    if int(data.get("config_version", 1)) < 3:
+        merged["restore_chrome_pages"] = True
+    merged["config_version"] = DEFAULT_CONFIG["config_version"]
+    return merged
+
+
 def load_config() -> dict:
     path = config_path()
     if not path.exists():
@@ -74,14 +87,7 @@ def load_config() -> dict:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return dict(DEFAULT_CONFIG)
-    merged = dict(DEFAULT_CONFIG)
-    merged.update({k: v for k, v in data.items() if k in DEFAULT_CONFIG})
-    if int(data.get("config_version", 1)) < 2:
-        merged["config_version"] = 2
-        merged["prompt_before_closing_chrome"] = False
-        merged["reopen_chrome_after_flag"] = True
-        merged["restore_chrome_pages"] = True
-    return merged
+    return merge_config_data(data)
 
 
 def save_config(config: dict) -> None:
@@ -241,21 +247,25 @@ def find_chrome_exe() -> Path | None:
     return None
 
 
+def build_chrome_reopen_command(chrome_exe: Path, restore_pages: bool = True) -> list[str]:
+    command = [str(chrome_exe)]
+    if restore_pages:
+        command.extend(["--restore-last-session", "--hide-crash-restore-bubble"])
+    return command
+
+
 def reopen_chrome(restore_pages: bool = True) -> StepResult:
     chrome_exe = find_chrome_exe()
     if not chrome_exe:
         return StepResult("Chrome", False, "Chrome flag changed, but chrome.exe was not found to reopen it.")
     try:
-        command = [str(chrome_exe)]
-        if restore_pages:
-            command.append("--restore-last-session")
         subprocess.Popen(
-            command,
+            build_chrome_reopen_command(chrome_exe, restore_pages),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             creationflags=CREATE_NO_WINDOW,
         )
-        message = "Chrome reopened with restore-last-session." if restore_pages else "Chrome reopened."
+        message = "Chrome reopened with session restore requested." if restore_pages else "Chrome reopened."
         return StepResult("Chrome", True, message)
     except Exception as exc:
         return StepResult("Chrome", False, f"Chrome flag changed, but reopen failed: {exc}")
@@ -283,6 +293,29 @@ def chrome_local_state_path() -> Path | None:
     return path if path.exists() else None
 
 
+def chrome_user_data_dir() -> Path | None:
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if not local_app_data:
+        return None
+    path = Path(local_app_data) / "Google" / "Chrome" / "User Data"
+    return path if path.exists() else None
+
+
+def chrome_profile_preferences_paths(user_data_dir: Path | None = None) -> list[Path]:
+    base = user_data_dir if user_data_dir is not None else chrome_user_data_dir()
+    if not base or not base.exists():
+        return []
+
+    paths = []
+    for child in base.iterdir():
+        if not child.is_dir() or child.name == "System Profile":
+            continue
+        preferences_path = child / "Preferences"
+        if preferences_path.exists():
+            paths.append(preferences_path)
+    return sorted(paths)
+
+
 def update_chrome_state_data(state: dict, enable: bool) -> dict:
     browser = state.setdefault("browser", {})
     experiments = browser.get("enabled_labs_experiments")
@@ -299,6 +332,44 @@ def update_chrome_state_data(state: dict, enable: bool) -> dict:
 
     browser["enabled_labs_experiments"] = filtered
     return state
+
+
+def update_chrome_preferences_data(preferences: dict, restore_pages: bool = True) -> dict:
+    if restore_pages:
+        session = preferences.setdefault("session", {})
+        session["restore_on_startup"] = 1
+
+    profile = preferences.setdefault("profile", {})
+    profile["exited_cleanly"] = True
+    profile["exit_type"] = "Normal"
+    return preferences
+
+
+def set_chrome_restore_preferences(restore_pages: bool, user_data_dir: Path | None = None) -> StepResult:
+    paths = chrome_profile_preferences_paths(user_data_dir)
+    if not paths:
+        return StepResult("Chrome", False, "No Chrome profile Preferences files were found for session restore.")
+
+    updated = 0
+    errors = []
+    for path in paths:
+        try:
+            preferences = json.loads(path.read_text(encoding="utf-8"))
+            update_chrome_preferences_data(preferences, restore_pages)
+            backup_path = path.with_name("Preferences.dark-white-mode.bak")
+            if not backup_path.exists():
+                shutil.copy2(path, backup_path)
+            path.write_text(json.dumps(preferences, separators=(",", ":"), ensure_ascii=False), encoding="utf-8")
+            updated += 1
+        except Exception as exc:
+            errors.append(f"{path.parent.name}: {exc}")
+
+    if updated:
+        message = f"Chrome restore preferences updated for {updated} profile(s)."
+        if errors:
+            message += " Some profiles failed: " + "; ".join(errors)
+        return StepResult("Chrome", True, message)
+    return StepResult("Chrome", False, "Chrome restore preferences were not changed. " + "; ".join(errors))
 
 
 def set_chrome_force_dark(enable: bool, reopen_after: bool = False, restore_pages: bool = True) -> StepResult:
@@ -318,6 +389,9 @@ def set_chrome_force_dark(enable: bool, reopen_after: bool = False, restore_page
 
     action = "enabled" if enable else "removed"
     message = f"Chrome force-dark flag {action}."
+    if restore_pages:
+        restore_result = set_chrome_restore_preferences(restore_pages)
+        message += " " + restore_result.message
     if reopen_after:
         reopen_result = reopen_chrome(restore_pages)
         if reopen_result.ok:

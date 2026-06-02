@@ -14,7 +14,7 @@ Credits: Guy Houri
 
 ## Notes
 
-- Chrome must be closed before the flag file can be changed reliably. By default, the app closes Chrome automatically, force-closes background Chrome processes if needed, updates the flag, reopens Chrome, and asks Chrome to restore the previous session.
+- Chrome must be closed before the flag file can be changed reliably. By default, the app closes Chrome automatically, force-closes background Chrome processes if needed, updates the flag, sets each Chrome profile to continue where it left off, suppresses Chrome's crash-restore bubble where supported, and reopens Chrome.
 - Closing or minimizing the window keeps the app running in the Windows system tray or hidden-icons overflow menu. Use the tray menu's Quit action to fully exit.
 - Brightness control depends on the display. Laptop panels usually work through WMI; many external monitors need DDC/CI enabled in the monitor menu.
 - f.lux does not provide a stable public command-line preset API, so this app uses the per-user f.lux preference registry values: `Outdoor`, `Indoor`, and `Late`.
@@ -38,4 +38,5 @@ dist\dark-white-mode.exe
 
 ```powershell
 python .\dark_white_mode.py --self-test
+python -m unittest discover -s tests -v
 ```
