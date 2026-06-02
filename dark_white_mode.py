@@ -50,7 +50,9 @@ def config_path() -> Path:
 
 
 DEFAULT_CONFIG = {
-    "config_version": 4,
+    "config_version": 5,
+    "start_with_windows": True,
+    "start_minimized_to_tray": True,
     "app_window_theme": True,
     "app_theme": "white",
     "windows_theme": True,
@@ -120,6 +122,9 @@ def merge_config_data(data: dict) -> dict:
     if int(data.get("config_version", 1)) < 4:
         merged["app_window_theme"] = True
         merged["app_theme"] = normalize_app_theme(data.get("last_mode", DEFAULT_CONFIG["app_theme"]))
+    if int(data.get("config_version", 1)) < 5:
+        merged["start_with_windows"] = True
+        merged["start_minimized_to_tray"] = True
     merged["app_theme"] = normalize_app_theme(merged.get("app_theme"))
     merged["config_version"] = DEFAULT_CONFIG["config_version"]
     return merged
@@ -138,6 +143,44 @@ def load_config() -> dict:
 
 def save_config(config: dict) -> None:
     config_path().write_text(json.dumps(config, indent=2), encoding="utf-8")
+
+
+def quote_command_part(value: str | Path) -> str:
+    return '"' + str(value).replace('"', r'\"') + '"'
+
+
+def app_launch_command_parts() -> list[str]:
+    if getattr(sys, "frozen", False):
+        return [sys.executable]
+    return [sys.executable, str(Path(__file__).resolve())]
+
+
+def build_startup_command(command_parts: list[str], minimized_to_tray: bool = True) -> str:
+    parts = [quote_command_part(part) for part in command_parts]
+    if minimized_to_tray:
+        parts.append("--startup")
+    return " ".join(parts)
+
+
+def startup_registry_command(minimized_to_tray: bool = True) -> str:
+    return build_startup_command(app_launch_command_parts(), minimized_to_tray)
+
+
+def set_windows_startup(enabled: bool, minimized_to_tray: bool = True) -> StepResult:
+    try:
+        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
+            if enabled:
+                winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, startup_registry_command(minimized_to_tray))
+            else:
+                try:
+                    winreg.DeleteValue(key, APP_NAME)
+                except FileNotFoundError:
+                    pass
+        message = "Enabled Windows startup." if enabled else "Disabled Windows startup."
+        return StepResult("Startup", True, message)
+    except Exception as exc:
+        return StepResult("Startup", False, f"Windows startup update failed: {exc}")
 
 
 def clamp_int(value, minimum: int, maximum: int, fallback: int) -> int:
@@ -654,12 +697,13 @@ def set_flux_kelvin(kelvin: int) -> StepResult:
 
 
 class DarkWhiteModeApp(tk.Tk):
-    def __init__(self):
+    def __init__(self, start_hidden: bool = False):
         super().__init__()
         self.title(APP_NAME)
-        self.geometry("520x720")
-        self.minsize(500, 650)
+        self.geometry("520x790")
+        self.minsize(500, 720)
         self.config_data = load_config()
+        self.start_hidden = start_hidden
         self.current_mode = read_windows_mode()
         self.vars = {}
         self.running = False
@@ -673,9 +717,11 @@ class DarkWhiteModeApp(tk.Tk):
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
         self.bind("<Unmap>", self._on_unmap)
+        self.sync_startup_setting(log_result=False)
         self._refresh_button()
         self.after(100, self._drain_ui_queue)
         self.after(500, self.start_tray_icon)
+        self.after(900, self._maybe_hide_startup_window)
 
     def _build_ui(self):
         self.columnconfigure(0, weight=1)
@@ -729,11 +775,30 @@ class DarkWhiteModeApp(tk.Tk):
 
         chrome_var = tk.BooleanVar(value=bool(self.config_data["prompt_before_closing_chrome"]))
         self.vars["prompt_before_closing_chrome"] = chrome_var
+
+        startup_var = tk.BooleanVar(value=bool(self.config_data["start_with_windows"]))
+        self.vars["start_with_windows"] = startup_var
+        ttk.Checkbutton(
+            root,
+            text="Start with Windows",
+            variable=startup_var,
+            command=self.sync_startup_setting,
+        ).grid(row=6, column=0, sticky="w", pady=(0, 12))
+
+        startup_minimized_var = tk.BooleanVar(value=bool(self.config_data["start_minimized_to_tray"]))
+        self.vars["start_minimized_to_tray"] = startup_minimized_var
+        ttk.Checkbutton(
+            root,
+            text="Start minimized to tray",
+            variable=startup_minimized_var,
+            command=self.sync_startup_setting,
+        ).grid(row=7, column=0, sticky="w", pady=(0, 12))
+
         ttk.Checkbutton(
             root,
             text="Ask before closing Chrome",
             variable=chrome_var,
-        ).grid(row=6, column=0, sticky="w", pady=(0, 12))
+        ).grid(row=8, column=0, sticky="w", pady=(0, 12))
 
         reopen_chrome_var = tk.BooleanVar(value=bool(self.config_data["reopen_chrome_after_flag"]))
         self.vars["reopen_chrome_after_flag"] = reopen_chrome_var
@@ -741,7 +806,7 @@ class DarkWhiteModeApp(tk.Tk):
             root,
             text="Reopen Chrome after updating flag",
             variable=reopen_chrome_var,
-        ).grid(row=7, column=0, sticky="w", pady=(0, 12))
+        ).grid(row=9, column=0, sticky="w", pady=(0, 12))
 
         restore_chrome_var = tk.BooleanVar(value=bool(self.config_data["restore_chrome_pages"]))
         self.vars["restore_chrome_pages"] = restore_chrome_var
@@ -749,11 +814,11 @@ class DarkWhiteModeApp(tk.Tk):
             root,
             text="Restore Chrome pages automatically",
             variable=restore_chrome_var,
-        ).grid(row=8, column=0, sticky="w", pady=(0, 12))
+        ).grid(row=10, column=0, sticky="w", pady=(0, 12))
 
         status_frame = ttk.LabelFrame(root, text="Status", padding=8)
-        status_frame.grid(row=9, column=0, sticky="nsew")
-        root.rowconfigure(9, weight=1)
+        status_frame.grid(row=11, column=0, sticky="nsew")
+        root.rowconfigure(11, weight=1)
         status_frame.columnconfigure(0, weight=1)
         status_frame.rowconfigure(0, weight=1)
 
@@ -769,7 +834,7 @@ class DarkWhiteModeApp(tk.Tk):
         scrollbar = ttk.Scrollbar(status_frame, orient="vertical", command=self.status_text.yview)
         scrollbar.grid(row=0, column=1, sticky="ns")
         self.status_text.configure(yscrollcommand=scrollbar.set)
-        ttk.Label(root, text=CREDIT_TEXT).grid(row=10, column=0, sticky="w", pady=(10, 0))
+        ttk.Label(root, text=CREDIT_TEXT).grid(row=12, column=0, sticky="w", pady=(10, 0))
         self.apply_app_theme()
         self.log("Ready.")
 
@@ -932,6 +997,31 @@ class DarkWhiteModeApp(tk.Tk):
                 pass
         self.destroy()
 
+    def _maybe_hide_startup_window(self):
+        if not self.start_hidden or self.quitting:
+            return
+        if not self.config_data.get("start_minimized_to_tray"):
+            return
+        if self.tray_icon is None:
+            self.log("WARN - Startup: Could not hide to tray because the tray icon is unavailable.")
+            return
+        self.hide_to_tray()
+
+    def sync_startup_setting(self, log_result: bool = True):
+        if "start_with_windows" in self.vars:
+            self.config_data["start_with_windows"] = bool(self.vars["start_with_windows"].get())
+        if "start_minimized_to_tray" in self.vars:
+            self.config_data["start_minimized_to_tray"] = bool(self.vars["start_minimized_to_tray"].get())
+        save_config(self.config_data)
+
+        result = set_windows_startup(
+            bool(self.config_data.get("start_with_windows")),
+            bool(self.config_data.get("start_minimized_to_tray")),
+        )
+        if log_result:
+            prefix = "OK" if result.ok else "WARN"
+            self.log(f"{prefix} - {result.name}: {result.message}")
+
     def _add_spinbox(self, parent, row, label, key, minimum, maximum, suffix):
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=4)
         value = tk.StringVar(value=str(self.config_data[key]))
@@ -959,6 +1049,8 @@ class DarkWhiteModeApp(tk.Tk):
     def collect_settings(self) -> dict:
         settings = dict(self.config_data)
         for key in (
+            "start_with_windows",
+            "start_minimized_to_tray",
             "app_window_theme",
             "windows_theme",
             "chrome_force_dark",
@@ -1086,6 +1178,8 @@ def self_test() -> int:
     assert normalize_app_theme("bad") == "white"
     assert opposite_app_theme("white") == "dark"
     assert "app_window_theme" in load_config()
+    assert "start_with_windows" in load_config()
+    assert build_startup_command([r"C:\Program Files\App\dark-white-mode.exe"], True).endswith('" --startup')
     image = create_tray_image()
     assert image is not None and image.size == (64, 64)
     print("self-test ok")
@@ -1095,7 +1189,7 @@ def self_test() -> int:
 def main() -> int:
     if "--self-test" in sys.argv:
         return self_test()
-    app = DarkWhiteModeApp()
+    app = DarkWhiteModeApp(start_hidden="--startup" in sys.argv)
     app.mainloop()
     return 0
 

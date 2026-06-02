@@ -89,6 +89,8 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(migrated["restore_chrome_pages"])
         self.assertTrue(migrated["app_window_theme"])
         self.assertEqual(migrated["app_theme"], "white")
+        self.assertTrue(migrated["start_with_windows"])
+        self.assertTrue(migrated["start_minimized_to_tray"])
 
     def test_app_theme_is_normalized(self):
         migrated = app.merge_config_data({"config_version": app.DEFAULT_CONFIG["config_version"], "app_theme": "purple"})
@@ -109,6 +111,16 @@ class MiscTests(unittest.TestCase):
         parsed = app.parse_flux_run_value(r'"C:\Users\me\AppData\Local\FluxSoftware\Flux\flux.exe" /noshow')
 
         self.assertEqual(str(parsed), r"C:\Users\me\AppData\Local\FluxSoftware\Flux\flux.exe")
+
+    def test_startup_command_quotes_path_and_uses_startup_arg(self):
+        command = app.build_startup_command([r"C:\Program Files\dark-white-mode\dark-white-mode.exe"], True)
+
+        self.assertEqual(command, r'"C:\Program Files\dark-white-mode\dark-white-mode.exe" --startup')
+
+    def test_startup_command_can_launch_visible(self):
+        command = app.build_startup_command([r"C:\Program Files\dark-white-mode\dark-white-mode.exe"], False)
+
+        self.assertEqual(command, r'"C:\Program Files\dark-white-mode\dark-white-mode.exe"')
 
 
 if __name__ == "__main__":
