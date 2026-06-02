@@ -70,4 +70,6 @@ jobs:
           TAG_NAME: ${{ github.ref_name }}
           RELEASE_ASSET: ${{ matrix.release_asset }}
         shell: bash
-        run: gh release upload "$TAG_NAME" "$RELEASE_ASSET" --clobber
+        run: |
+          gh release view "$TAG_NAME" >/dev/null 2>&1 || gh release create "$TAG_NAME" --title "$TAG_NAME" --generate-notes || true
+          gh release upload "$TAG_NAME" "$RELEASE_ASSET" --clobber
