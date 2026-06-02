@@ -87,6 +87,17 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse(migrated["prompt_before_closing_chrome"])
         self.assertTrue(migrated["reopen_chrome_after_flag"])
         self.assertTrue(migrated["restore_chrome_pages"])
+        self.assertTrue(migrated["app_window_theme"])
+        self.assertEqual(migrated["app_theme"], "white")
+
+    def test_app_theme_is_normalized(self):
+        migrated = app.merge_config_data({"config_version": app.DEFAULT_CONFIG["config_version"], "app_theme": "purple"})
+
+        self.assertEqual(migrated["app_theme"], "white")
+
+    def test_opposite_app_theme(self):
+        self.assertEqual(app.opposite_app_theme("white"), "dark")
+        self.assertEqual(app.opposite_app_theme("dark"), "white")
 
 
 class MiscTests(unittest.TestCase):

@@ -50,7 +50,9 @@ def config_path() -> Path:
 
 
 DEFAULT_CONFIG = {
-    "config_version": 3,
+    "config_version": 4,
+    "app_window_theme": True,
+    "app_theme": "white",
     "windows_theme": True,
     "chrome_force_dark": True,
     "brightness": True,
@@ -66,6 +68,46 @@ DEFAULT_CONFIG = {
 }
 
 
+APP_THEME_COLORS = {
+    "white": {
+        "bg": "#f5f6f8",
+        "surface": "#ffffff",
+        "text": "#1f2328",
+        "muted": "#5d6470",
+        "border": "#d0d7de",
+        "accent": "#2563eb",
+        "accent_hover": "#1d4ed8",
+        "button_fg": "#ffffff",
+        "field": "#ffffff",
+        "status_bg": "#ffffff",
+        "status_fg": "#1f2328",
+        "select_bg": "#dbeafe",
+    },
+    "dark": {
+        "bg": "#111318",
+        "surface": "#1b1f27",
+        "text": "#f3f4f6",
+        "muted": "#a7b0be",
+        "border": "#303744",
+        "accent": "#75a7ff",
+        "accent_hover": "#9bbcff",
+        "button_fg": "#101318",
+        "field": "#101318",
+        "status_bg": "#101318",
+        "status_fg": "#e5e7eb",
+        "select_bg": "#26324a",
+    },
+}
+
+
+def normalize_app_theme(value) -> str:
+    return "dark" if str(value).lower() == "dark" else "white"
+
+
+def opposite_app_theme(value) -> str:
+    return "white" if normalize_app_theme(value) == "dark" else "dark"
+
+
 def merge_config_data(data: dict) -> dict:
     merged = dict(DEFAULT_CONFIG)
     merged.update({k: v for k, v in data.items() if k in DEFAULT_CONFIG})
@@ -75,6 +117,10 @@ def merge_config_data(data: dict) -> dict:
         merged["restore_chrome_pages"] = True
     if int(data.get("config_version", 1)) < 3:
         merged["restore_chrome_pages"] = True
+    if int(data.get("config_version", 1)) < 4:
+        merged["app_window_theme"] = True
+        merged["app_theme"] = normalize_app_theme(data.get("last_mode", DEFAULT_CONFIG["app_theme"]))
+    merged["app_theme"] = normalize_app_theme(merged.get("app_theme"))
     merged["config_version"] = DEFAULT_CONFIG["config_version"]
     return merged
 
@@ -611,8 +657,8 @@ class DarkWhiteModeApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(APP_NAME)
-        self.geometry("520x650")
-        self.minsize(500, 590)
+        self.geometry("520x720")
+        self.minsize(500, 650)
         self.config_data = load_config()
         self.current_mode = read_windows_mode()
         self.vars = {}
@@ -623,6 +669,7 @@ class DarkWhiteModeApp(tk.Tk):
         self.tray_notice_shown = False
         self.ui_queue = queue.Queue()
         self.result_queue = queue.Queue()
+        self.style = None
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
         self.bind("<Unmap>", self._on_unmap)
@@ -632,14 +679,14 @@ class DarkWhiteModeApp(tk.Tk):
 
     def _build_ui(self):
         self.columnconfigure(0, weight=1)
-        style = ttk.Style(self)
+        self.style = ttk.Style(self)
         try:
-            style.theme_use("clam")
+            self.style.theme_use("clam")
         except tk.TclError:
             pass
-        style.configure("Title.TLabel", font=("Segoe UI", 18, "bold"))
-        style.configure("Mode.TLabel", font=("Segoe UI", 11))
-        style.configure("Big.TButton", font=("Segoe UI", 14, "bold"), padding=(18, 14))
+        self.style.configure("Title.TLabel", font=("Segoe UI", 18, "bold"))
+        self.style.configure("Mode.TLabel", font=("Segoe UI", 11))
+        self.style.configure("Big.TButton", font=("Segoe UI", 14, "bold"), padding=(18, 14))
 
         root = ttk.Frame(self, padding=18)
         root.grid(row=0, column=0, sticky="nsew")
@@ -649,14 +696,18 @@ class DarkWhiteModeApp(tk.Tk):
         self.mode_label = ttk.Label(root, text="", style="Mode.TLabel")
         self.mode_label.grid(row=1, column=0, sticky="w", pady=(4, 16))
 
+        self.app_theme_button = ttk.Button(root, text="", command=self.toggle_app_theme)
+        self.app_theme_button.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+
         self.toggle_button = ttk.Button(root, text="", style="Big.TButton", command=self.toggle)
-        self.toggle_button.grid(row=2, column=0, sticky="ew", pady=(0, 16))
+        self.toggle_button.grid(row=3, column=0, sticky="ew", pady=(0, 16))
 
         targets = ttk.LabelFrame(root, text="Targets", padding=12)
-        targets.grid(row=3, column=0, sticky="ew", pady=(0, 12))
+        targets.grid(row=4, column=0, sticky="ew", pady=(0, 12))
         targets.columnconfigure(0, weight=1)
         for index, (key, label) in enumerate(
             [
+                ("app_window_theme", "App window theme"),
                 ("windows_theme", "Windows theme"),
                 ("chrome_force_dark", "Chrome force-dark flag"),
                 ("brightness", "Display brightness"),
@@ -668,7 +719,7 @@ class DarkWhiteModeApp(tk.Tk):
             ttk.Checkbutton(targets, text=label, variable=var).grid(row=index, column=0, sticky="w", pady=2)
 
         values = ttk.LabelFrame(root, text="Values", padding=12)
-        values.grid(row=4, column=0, sticky="ew", pady=(0, 12))
+        values.grid(row=5, column=0, sticky="ew", pady=(0, 12))
         values.columnconfigure(1, weight=1)
 
         self._add_spinbox(values, 0, "Dark brightness", "dark_brightness", 0, 100, "%")
@@ -682,7 +733,7 @@ class DarkWhiteModeApp(tk.Tk):
             root,
             text="Ask before closing Chrome",
             variable=chrome_var,
-        ).grid(row=5, column=0, sticky="w", pady=(0, 12))
+        ).grid(row=6, column=0, sticky="w", pady=(0, 12))
 
         reopen_chrome_var = tk.BooleanVar(value=bool(self.config_data["reopen_chrome_after_flag"]))
         self.vars["reopen_chrome_after_flag"] = reopen_chrome_var
@@ -690,7 +741,7 @@ class DarkWhiteModeApp(tk.Tk):
             root,
             text="Reopen Chrome after updating flag",
             variable=reopen_chrome_var,
-        ).grid(row=6, column=0, sticky="w", pady=(0, 12))
+        ).grid(row=7, column=0, sticky="w", pady=(0, 12))
 
         restore_chrome_var = tk.BooleanVar(value=bool(self.config_data["restore_chrome_pages"]))
         self.vars["restore_chrome_pages"] = restore_chrome_var
@@ -698,11 +749,11 @@ class DarkWhiteModeApp(tk.Tk):
             root,
             text="Restore Chrome pages automatically",
             variable=restore_chrome_var,
-        ).grid(row=7, column=0, sticky="w", pady=(0, 12))
+        ).grid(row=8, column=0, sticky="w", pady=(0, 12))
 
         status_frame = ttk.LabelFrame(root, text="Status", padding=8)
-        status_frame.grid(row=8, column=0, sticky="nsew")
-        root.rowconfigure(8, weight=1)
+        status_frame.grid(row=9, column=0, sticky="nsew")
+        root.rowconfigure(9, weight=1)
         status_frame.columnconfigure(0, weight=1)
         status_frame.rowconfigure(0, weight=1)
 
@@ -718,8 +769,98 @@ class DarkWhiteModeApp(tk.Tk):
         scrollbar = ttk.Scrollbar(status_frame, orient="vertical", command=self.status_text.yview)
         scrollbar.grid(row=0, column=1, sticky="ns")
         self.status_text.configure(yscrollcommand=scrollbar.set)
-        ttk.Label(root, text=CREDIT_TEXT).grid(row=9, column=0, sticky="w", pady=(10, 0))
+        ttk.Label(root, text=CREDIT_TEXT).grid(row=10, column=0, sticky="w", pady=(10, 0))
+        self.apply_app_theme()
         self.log("Ready.")
+
+    def theme_colors(self) -> dict:
+        return APP_THEME_COLORS[normalize_app_theme(self.config_data.get("app_theme"))]
+
+    def apply_app_theme(self):
+        colors = self.theme_colors()
+        self.configure(background=colors["bg"])
+        if self.style is not None:
+            self.style.configure(".", background=colors["bg"], foreground=colors["text"])
+            self.style.configure("TFrame", background=colors["bg"])
+            self.style.configure("TLabel", background=colors["bg"], foreground=colors["text"])
+            self.style.configure("Title.TLabel", background=colors["bg"], foreground=colors["text"])
+            self.style.configure("Mode.TLabel", background=colors["bg"], foreground=colors["muted"])
+            self.style.configure(
+                "TLabelframe",
+                background=colors["bg"],
+                foreground=colors["text"],
+                bordercolor=colors["border"],
+                relief="solid",
+            )
+            self.style.configure(
+                "TLabelframe.Label",
+                background=colors["bg"],
+                foreground=colors["text"],
+            )
+            self.style.configure(
+                "TCheckbutton",
+                background=colors["bg"],
+                foreground=colors["text"],
+                focuscolor=colors["border"],
+            )
+            self.style.map(
+                "TCheckbutton",
+                background=[("active", colors["bg"])],
+                foreground=[("disabled", colors["muted"]), ("active", colors["text"])],
+            )
+            self.style.configure(
+                "TButton",
+                background=colors["surface"],
+                foreground=colors["text"],
+                bordercolor=colors["border"],
+                focuscolor=colors["border"],
+            )
+            self.style.map(
+                "TButton",
+                background=[("active", colors["select_bg"]), ("disabled", colors["surface"])],
+                foreground=[("disabled", colors["muted"]), ("active", colors["text"])],
+            )
+            self.style.configure(
+                "Big.TButton",
+                background=colors["accent"],
+                foreground=colors["button_fg"],
+                bordercolor=colors["accent"],
+                focuscolor=colors["accent"],
+            )
+            self.style.map(
+                "Big.TButton",
+                background=[("active", colors["accent_hover"]), ("disabled", colors["surface"])],
+                foreground=[("disabled", colors["muted"]), ("active", colors["button_fg"])],
+            )
+            self.style.configure(
+                "TSpinbox",
+                fieldbackground=colors["field"],
+                background=colors["surface"],
+                foreground=colors["text"],
+                bordercolor=colors["border"],
+                arrowcolor=colors["text"],
+            )
+
+        if hasattr(self, "status_text"):
+            self.status_text.configure(
+                background=colors["status_bg"],
+                foreground=colors["status_fg"],
+                insertbackground=colors["text"],
+                selectbackground=colors["select_bg"],
+                selectforeground=colors["text"],
+            )
+        self._refresh_button()
+
+    def set_app_theme(self, theme: str, persist: bool = True):
+        self.config_data["app_theme"] = normalize_app_theme(theme)
+        if persist:
+            save_config(self.config_data)
+        self.apply_app_theme()
+
+    def toggle_app_theme(self):
+        next_theme = opposite_app_theme(self.config_data.get("app_theme"))
+        self.set_app_theme(next_theme)
+        self.log(f"OK - App: App window theme set to {next_theme}.")
 
     def start_tray_icon(self):
         if self.tray_started:
@@ -804,6 +945,10 @@ class DarkWhiteModeApp(tk.Tk):
         target = "White" if self.current_mode == "dark" else "Dark"
         self.mode_label.configure(text=f"Current mode: {mode_name}")
         self.toggle_button.configure(text=f"Switch to {target} Mode")
+        if hasattr(self, "app_theme_button"):
+            app_theme = normalize_app_theme(self.config_data.get("app_theme"))
+            next_theme = opposite_app_theme(app_theme).title()
+            self.app_theme_button.configure(text=f"App Theme: {app_theme.title()}  |  Switch to {next_theme}")
 
     def log(self, message: str):
         self.status_text.configure(state="normal")
@@ -814,6 +959,7 @@ class DarkWhiteModeApp(tk.Tk):
     def collect_settings(self) -> dict:
         settings = dict(self.config_data)
         for key in (
+            "app_window_theme",
             "windows_theme",
             "chrome_force_dark",
             "brightness",
@@ -835,8 +981,13 @@ class DarkWhiteModeApp(tk.Tk):
         target_dark = self.current_mode != "dark"
         settings = self.collect_settings()
         settings["last_mode"] = "dark" if target_dark else "white"
+        if settings["app_window_theme"]:
+            settings["app_theme"] = "dark" if target_dark else "white"
         self.config_data = settings
         save_config(settings)
+        if settings["app_window_theme"]:
+            self.apply_app_theme()
+            self.log(f"OK - App: App window theme set to {settings['app_theme']}.")
 
         if settings["chrome_force_dark"] and is_process_running("chrome.exe"):
             close_now = True
@@ -931,6 +1082,10 @@ def self_test() -> int:
     assert parse_flux_run_value(r'"C:\Users\me\AppData\Local\FluxSoftware\Flux\flux.exe" /noshow')
     assert "reopen_chrome_after_flag" in load_config()
     assert "restore_chrome_pages" in load_config()
+    assert normalize_app_theme("dark") == "dark"
+    assert normalize_app_theme("bad") == "white"
+    assert opposite_app_theme("white") == "dark"
+    assert "app_window_theme" in load_config()
     image = create_tray_image()
     assert image is not None and image.size == (64, 64)
     print("self-test ok")

@@ -7,6 +7,7 @@ Credits: Guy Houri
 ## What the button changes
 
 - Windows app and system theme through the current user's theme registry keys.
+- The app window's own dark/white theme, either with the main toggle or with the separate App Theme button.
 - Chrome's `chrome://flags` force-dark experiment by editing Chrome's per-user `Local State` file.
 - Display brightness through Windows WMI and DDC/CI monitor control where supported.
 - f.lux color temperature by updating the current user's f.lux registry values and restarting `flux.exe`.
