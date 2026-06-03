@@ -1,8 +1,10 @@
 import json
 import plistlib
+import queue
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import dark_white_mode as app
 
@@ -103,7 +105,50 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(app.opposite_app_theme("dark"), "white")
 
 
+class ApplyWorkflowTests(unittest.TestCase):
+    def test_failed_chrome_close_skips_chrome_flag_but_continues_remaining_steps(self):
+        runner = type("Runner", (), {"result_queue": queue.Queue()})()
+        settings = {
+            "windows_theme": False,
+            "brightness": False,
+            "chrome_force_dark": True,
+            "flux": True,
+            "_close_chrome_for_flag": True,
+            "_reopen_chrome_after_flag": True,
+            "_restore_chrome_pages": True,
+            "dark_flux_kelvin": 1200,
+            "white_flux_kelvin": 6500,
+        }
+
+        with (
+            mock.patch.object(
+                app,
+                "close_chrome_for_flag",
+                return_value=app.StepResult("Chrome", False, "Chrome is still running."),
+            ),
+            mock.patch.object(app, "set_chrome_force_dark") as set_chrome_force_dark,
+            mock.patch.object(
+                app,
+                "set_flux_kelvin",
+                return_value=app.StepResult("f.lux", True, "f.lux updated."),
+            ) as set_flux_kelvin,
+        ):
+            app.DarkWhiteModeApp._apply_in_thread(runner, True, settings)
+
+        target_dark, results = runner.result_queue.get_nowait()
+        self.assertTrue(target_dark)
+        set_chrome_force_dark.assert_not_called()
+        set_flux_kelvin.assert_called_once_with(1200)
+        self.assertEqual([result.name for result in results], ["Chrome", "Chrome", "f.lux"])
+
+
 class MiscTests(unittest.TestCase):
+    def test_mode_change_loading_text_names_target_mode(self):
+        self.assertEqual(app.mode_change_status_text(True), "Changing to Dark mode. Please wait...")
+        self.assertEqual(app.mode_change_status_text(False), "Changing to White mode. Please wait...")
+        self.assertEqual(app.mode_change_button_text(True), "Changing to Dark Mode...")
+        self.assertEqual(app.mode_change_button_text(False), "Changing to White Mode...")
+
     def test_clamp_int(self):
         self.assertEqual(app.clamp_int("200", 0, 100, 1), 100)
         self.assertEqual(app.clamp_int("bad", 0, 100, 7), 7)
