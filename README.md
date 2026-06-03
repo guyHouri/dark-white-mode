@@ -57,3 +57,7 @@ dark-white-mode-macos.zip
 python .\dark_white_mode.py --self-test
 python -m unittest discover -s tests -v
 ```
+
+## License
+
+MIT License. See [LICENSE](LICENSE).
