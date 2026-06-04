@@ -62,7 +62,7 @@ def config_path() -> Path:
 
 
 DEFAULT_CONFIG = {
-    "config_version": 5,
+    "config_version": 6,
     "start_with_windows": True,
     "start_minimized_to_tray": True,
     "app_window_theme": True,
@@ -74,7 +74,7 @@ DEFAULT_CONFIG = {
     "prompt_before_closing_chrome": False,
     "reopen_chrome_after_flag": True,
     "restore_chrome_pages": True,
-    "dark_brightness": 1,
+    "dark_brightness": 0,
     "white_brightness": 70,
     "dark_flux_kelvin": 1200,
     "white_flux_kelvin": 6500,
@@ -149,6 +149,13 @@ def merge_config_data(data: dict) -> dict:
     if int(data.get("config_version", 1)) < 5:
         merged["start_with_windows"] = True
         merged["start_minimized_to_tray"] = True
+    if int(data.get("config_version", 1)) < 6:
+        try:
+            previous_dark_brightness = int(data.get("dark_brightness", 1))
+        except (TypeError, ValueError):
+            previous_dark_brightness = 1
+        if previous_dark_brightness == 1:
+            merged["dark_brightness"] = 0
     merged["app_theme"] = normalize_app_theme(merged.get("app_theme"))
     merged["config_version"] = DEFAULT_CONFIG["config_version"]
     return merged
@@ -722,6 +729,21 @@ class PhysicalMonitor(ctypes.Structure):
     ]
 
 
+def ddc_brightness_result(changed: int, physical_count: int) -> tuple[bool, str]:
+    if changed:
+        if changed == physical_count:
+            return True, f"DDC/CI brightness updated on all {changed} display(s)."
+        skipped = physical_count - changed
+        return (
+            True,
+            f"DDC/CI brightness updated on {changed} of {physical_count} display(s); "
+            f"{skipped} display(s) did not accept it.",
+        )
+    if physical_count:
+        return False, "Displays were found, but none accepted DDC/CI brightness control."
+    return False, "No DDC/CI-capable physical display was found."
+
+
 def set_brightness_ddc(level: int) -> tuple[bool, str]:
     try:
         user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -786,11 +808,7 @@ def set_brightness_ddc(level: int) -> tuple[bool, str]:
         finally:
             dxva2.DestroyPhysicalMonitors(count, physical_monitors)
 
-    if changed:
-        return True, f"DDC/CI brightness updated on {changed} display(s)."
-    if physical_count:
-        return False, "Displays were found, but none accepted DDC/CI brightness control."
-    return False, "No DDC/CI-capable physical display was found."
+    return ddc_brightness_result(changed, physical_count)
 
 
 def set_brightness(level: int) -> StepResult:
@@ -1458,6 +1476,8 @@ def self_test() -> int:
     assert opposite_app_theme("white") == "dark"
     assert mode_change_status_text(True) == "Changing to Dark mode. Please wait..."
     assert mode_change_button_text(False) == "Changing to White Mode..."
+    assert merge_config_data({"config_version": 5, "dark_brightness": 1})["dark_brightness"] == 0
+    assert ddc_brightness_result(1, 2)[0]
     assert "app_window_theme" in load_config()
     assert "start_with_windows" in load_config()
     assert build_startup_command([r"C:\Program Files\App\dark-white-mode.exe"], True).endswith('" --startup')
