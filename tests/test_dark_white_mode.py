@@ -168,6 +168,22 @@ class MiscTests(unittest.TestCase):
 
         self.assertEqual(command, r'"C:\Program Files\dark-white-mode\dark-white-mode.exe"')
 
+    def test_start_menu_shortcut_script_uses_exe_icon(self):
+        script = app.build_windows_shortcut_script(
+            Path(r"C:\Users\me\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\dark-white-mode.lnk"),
+            [r"C:\Program Files\dark-white-mode\dark-white-mode.exe"],
+        )
+
+        self.assertIn("dark-white-mode.exe,0", script)
+        self.assertIn("IconLocation", script)
+
+    def test_app_icon_can_be_generated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            icon_path = app.save_app_icon(Path(tmp) / "dark-white-mode.ico")
+
+            self.assertTrue(icon_path.exists())
+            self.assertGreater(icon_path.stat().st_size, 0)
+
     def test_macos_launch_agent_arguments_include_startup(self):
         arguments = app.macos_launch_agent_program_arguments(["/Applications/dark-white-mode.app/Contents/MacOS/dark-white-mode"], True)
 

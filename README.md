@@ -9,6 +9,7 @@ Credits: Guy Houri
 - Windows/macOS system dark and light appearance.
 - The app window's own dark/white theme, either with the main toggle or with the separate App Theme button.
 - Windows/macOS startup registration, so the app can launch automatically after restart and start minimized to the tray/menu bar.
+- A Windows Start Menu shortcut, so Windows Search can find the app with the same icon used by the executable.
 - Chrome's `chrome://flags` force-dark experiment by editing Chrome's per-user `Local State` file.
 - Display brightness through Windows WMI and DDC/CI monitor control where supported.
 - f.lux color temperature by updating the current user's f.lux registry values and restarting `flux.exe`.

@@ -52,7 +52,9 @@ jobs:
 
       - name: Build Windows executable
         if: runner.os == 'Windows'
-        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name dark-white-mode dark_white_mode.py
+        run: |
+          python dark_white_mode.py --make-icon assets/dark-white-mode.ico
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --icon assets/dark-white-mode.ico --name dark-white-mode dark_white_mode.py
 
       - name: Build macOS app
         if: runner.os == 'macOS'

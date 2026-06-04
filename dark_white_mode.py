@@ -269,6 +269,65 @@ def set_platform_startup(enabled: bool, minimized_to_tray: bool = True) -> StepR
     return StepResult("Startup", False, f"Startup is not supported on {platform_name()}.")
 
 
+def windows_start_menu_shortcut_path() -> Path:
+    app_data = Path(os.environ.get("APPDATA", str(Path.home())))
+    return app_data / "Microsoft" / "Windows" / "Start Menu" / "Programs" / f"{APP_NAME}.lnk"
+
+
+def shortcut_working_directory(command_parts: list[str]) -> str:
+    if getattr(sys, "frozen", False):
+        return str(Path(command_parts[0]).resolve().parent)
+    if len(command_parts) > 1:
+        return str(Path(command_parts[1]).resolve().parent)
+    return str(Path(command_parts[0]).resolve().parent)
+
+
+def build_windows_shortcut_script(shortcut_path: Path, command_parts: list[str]) -> str:
+    target_path = str(Path(command_parts[0]).resolve())
+    arguments = " ".join(quote_command_part(part) for part in command_parts[1:])
+    payload = {
+        "shortcut_path": str(shortcut_path),
+        "target_path": target_path,
+        "arguments": arguments,
+        "working_directory": shortcut_working_directory(command_parts),
+        "description": f"{APP_NAME} by Guy Houri",
+        "icon_location": f"{target_path},0",
+    }
+    payload_json = json.dumps(payload)
+    return f"""
+$data = @'
+{payload_json}
+'@ | ConvertFrom-Json
+$parent = Split-Path -Parent $data.shortcut_path
+New-Item -ItemType Directory -Path $parent -Force | Out-Null
+$wsh = New-Object -ComObject WScript.Shell
+$shortcut = $wsh.CreateShortcut($data.shortcut_path)
+$shortcut.TargetPath = $data.target_path
+$shortcut.Arguments = $data.arguments
+$shortcut.WorkingDirectory = $data.working_directory
+$shortcut.Description = $data.description
+$shortcut.IconLocation = $data.icon_location
+$shortcut.Save()
+"""
+
+
+def ensure_windows_start_menu_shortcut() -> StepResult:
+    if not IS_WINDOWS:
+        return StepResult("Shortcut", False, "Start Menu shortcut is only available on Windows.")
+    try:
+        script = build_windows_shortcut_script(windows_start_menu_shortcut_path(), app_launch_command_parts())
+        completed = run_hidden(
+            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+            timeout=10,
+        )
+        if completed.returncode == 0:
+            return StepResult("Shortcut", True, "Windows Start Menu shortcut is ready.")
+        message = (completed.stderr or completed.stdout or "").strip()
+        return StepResult("Shortcut", False, "Windows Start Menu shortcut failed. " + message)
+    except Exception as exc:
+        return StepResult("Shortcut", False, f"Windows Start Menu shortcut failed: {exc}")
+
+
 def clamp_int(value, minimum: int, maximum: int, fallback: int) -> int:
     try:
         number = int(value)
@@ -533,18 +592,51 @@ def reopen_chrome(restore_pages: bool = True) -> StepResult:
         return StepResult("Chrome", False, f"Chrome flag changed, but reopen failed: {exc}")
 
 
-def create_tray_image():
+def create_icon_image(size: int = 64):
     if Image is None or ImageDraw is None:
         return None
 
-    size = 64
+    scale = size / 64
+
+    def scaled(value: int) -> int:
+        return int(round(value * scale))
+
     image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
-    draw.rounded_rectangle((4, 4, 60, 60), radius=12, fill=(26, 28, 33), outline=(230, 230, 230), width=2)
-    draw.pieslice((12, 12, 52, 52), 90, 270, fill=(245, 245, 245))
-    draw.pieslice((12, 12, 52, 52), 270, 90, fill=(22, 22, 24))
-    draw.ellipse((12, 12, 52, 52), outline=(250, 250, 250), width=2)
+    border_width = max(1, scaled(2))
+    draw.rounded_rectangle(
+        (scaled(4), scaled(4), scaled(60), scaled(60)),
+        radius=scaled(12),
+        fill=(26, 28, 33),
+        outline=(230, 230, 230),
+        width=border_width,
+    )
+    draw.pieslice((scaled(12), scaled(12), scaled(52), scaled(52)), 90, 270, fill=(245, 245, 245))
+    draw.pieslice((scaled(12), scaled(12), scaled(52), scaled(52)), 270, 90, fill=(22, 22, 24))
+    draw.ellipse(
+        (scaled(12), scaled(12), scaled(52), scaled(52)),
+        outline=(250, 250, 250),
+        width=border_width,
+    )
     return image
+
+
+def create_tray_image():
+    return create_icon_image(64)
+
+
+def save_app_icon(path: Path) -> Path:
+    image = create_icon_image(256)
+    if image is None:
+        raise RuntimeError("Pillow is required to generate the app icon.")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(
+        path,
+        format="ICO",
+        sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
+    )
+    return path
 
 
 def chrome_local_state_path() -> Path | None:
@@ -950,6 +1042,7 @@ class DarkWhiteModeApp(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
         self.bind("<Unmap>", self._on_unmap)
         self.sync_startup_setting(log_result=False)
+        self.sync_start_menu_shortcut(log_result=False)
         self._refresh_button()
         self.after(100, self._drain_ui_queue)
         self.after(500, self.start_tray_icon)
@@ -1277,6 +1370,12 @@ class DarkWhiteModeApp(tk.Tk):
             prefix = "OK" if result.ok else "WARN"
             self.log(f"{prefix} - {result.name}: {result.message}")
 
+    def sync_start_menu_shortcut(self, log_result: bool = True):
+        result = ensure_windows_start_menu_shortcut()
+        if log_result or not result.ok:
+            prefix = "OK" if result.ok else "WARN"
+            self.log(f"{prefix} - {result.name}: {result.message}")
+
     def _add_spinbox(self, parent, row, label, key, minimum, maximum, suffix):
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=4)
         value = tk.StringVar(value=str(self.config_data[key]))
@@ -1461,6 +1560,11 @@ def self_test() -> int:
     assert "app_window_theme" in load_config()
     assert "start_with_windows" in load_config()
     assert build_startup_command([r"C:\Program Files\App\dark-white-mode.exe"], True).endswith('" --startup')
+    shortcut_script = build_windows_shortcut_script(
+        Path(r"C:\Users\me\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\dark-white-mode.lnk"),
+        [r"C:\Program Files\App\dark-white-mode.exe"],
+    )
+    assert "IconLocation" in shortcut_script
     launch_agent = plistlib.loads(build_macos_launch_agent_plist(["/Applications/dark-white-mode.app/Contents/MacOS/dark-white-mode"], True))
     assert launch_agent["Label"] == macos_launch_agent_label()
     assert "--startup" in launch_agent["ProgramArguments"]
@@ -1473,6 +1577,14 @@ def self_test() -> int:
 def main() -> int:
     if "--self-test" in sys.argv:
         return self_test()
+    if "--make-icon" in sys.argv:
+        index = sys.argv.index("--make-icon")
+        if index + 1 >= len(sys.argv):
+            print("Missing icon path after --make-icon", file=sys.stderr)
+            return 2
+        icon_path = save_app_icon(Path(sys.argv[index + 1]))
+        print(f"Icon written: {icon_path}")
+        return 0
     app = DarkWhiteModeApp(start_hidden="--startup" in sys.argv)
     app.mainloop()
     return 0
