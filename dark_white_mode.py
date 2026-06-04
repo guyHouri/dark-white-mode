@@ -21,15 +21,17 @@ else:
 
 try:
     import pystray
-    from PIL import Image, ImageDraw
+    from PIL import Image, ImageDraw, ImageTk
 except ImportError:
     pystray = None
     Image = None
     ImageDraw = None
+    ImageTk = None
 
 
 APP_NAME = "dark-white-mode"
 CREDIT_TEXT = "Credits: Guy Houri"
+APP_USER_MODEL_ID = "GuyHouri.dark-white-mode"
 IS_WINDOWS = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
 CREATE_NO_WINDOW = 0x08000000
@@ -267,6 +269,16 @@ def set_platform_startup(enabled: bool, minimized_to_tray: bool = True) -> StepR
     if IS_MAC:
         return set_macos_startup(enabled, minimized_to_tray)
     return StepResult("Startup", False, f"Startup is not supported on {platform_name()}.")
+
+
+def set_windows_app_user_model_id() -> bool:
+    if not IS_WINDOWS:
+        return False
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+        return True
+    except Exception:
+        return False
 
 
 def windows_start_menu_shortcut_path() -> Path:
@@ -637,6 +649,10 @@ def save_app_icon(path: Path) -> Path:
         sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
     )
     return path
+
+
+def runtime_icon_path() -> Path:
+    return app_data_dir() / f"{APP_NAME}.ico"
 
 
 def chrome_local_state_path() -> Path | None:
@@ -1021,7 +1037,10 @@ def set_flux_kelvin(kelvin: int) -> StepResult:
 
 class DarkWhiteModeApp(tk.Tk):
     def __init__(self, start_hidden: bool = False):
+        set_windows_app_user_model_id()
         super().__init__()
+        self.app_icon_photo = None
+        self.apply_window_icon()
         self.title(APP_NAME)
         self.geometry("520x820")
         self.minsize(500, 740)
@@ -1371,10 +1390,33 @@ class DarkWhiteModeApp(tk.Tk):
             self.log(f"{prefix} - {result.name}: {result.message}")
 
     def sync_start_menu_shortcut(self, log_result: bool = True):
+        if not IS_WINDOWS:
+            return
         result = ensure_windows_start_menu_shortcut()
         if log_result or not result.ok:
             prefix = "OK" if result.ok else "WARN"
             self.log(f"{prefix} - {result.name}: {result.message}")
+
+    def apply_window_icon(self):
+        if ImageTk is None:
+            return
+
+        image = create_icon_image(256)
+        if image is None:
+            return
+
+        try:
+            self.app_icon_photo = ImageTk.PhotoImage(image)
+            self.iconphoto(True, self.app_icon_photo)
+        except Exception:
+            pass
+
+        if IS_WINDOWS:
+            try:
+                icon_path = save_app_icon(runtime_icon_path())
+                self.iconbitmap(default=str(icon_path))
+            except Exception:
+                pass
 
     def _add_spinbox(self, parent, row, label, key, minimum, maximum, suffix):
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=4)
