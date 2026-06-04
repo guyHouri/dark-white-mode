@@ -19,7 +19,7 @@ Credits: Guy Houri
 - Chrome must be closed before the flag file can be changed reliably. By default, the app closes Chrome automatically, force-closes background Chrome processes if needed, updates the flag, sets each Chrome profile to continue where it left off, suppresses Chrome's crash-restore bubble where supported, and reopens Chrome.
 - Closing or minimizing the window keeps the app running in the Windows system tray or hidden-icons overflow menu. Use the tray menu's Quit action to fully exit.
 - Startup is enabled by default. On Windows the app registers itself under the current user's startup apps. On macOS it writes a per-user LaunchAgent. Both launch with `--startup`, which starts minimized to the tray/menu bar.
-- Brightness control depends on the display. Windows uses WMI and DDC/CI where supported, including external monitors that have DDC/CI enabled in their physical monitor menu. macOS requires the optional Homebrew `brightness` tool.
+- Brightness control depends on the display. Windows uses WMI and DDC/CI where supported. macOS requires the optional Homebrew `brightness` tool.
 - f.lux does not provide a stable public command-line preset API. Windows uses the per-user f.lux preference registry values: `Outdoor`, `Indoor`, and `Late`. macOS f.lux Kelvin switching is not supported yet.
 - The app works per desktop user and normally does not need administrator rights.
 

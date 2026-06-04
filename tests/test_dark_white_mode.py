@@ -83,7 +83,6 @@ class ConfigTests(unittest.TestCase):
                 "prompt_before_closing_chrome": True,
                 "reopen_chrome_after_flag": False,
                 "restore_chrome_pages": False,
-                "dark_brightness": 1,
             }
         )
 
@@ -95,12 +94,6 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(migrated["app_theme"], "white")
         self.assertTrue(migrated["start_with_windows"])
         self.assertTrue(migrated["start_minimized_to_tray"])
-        self.assertEqual(migrated["dark_brightness"], 0)
-
-    def test_custom_dark_brightness_survives_config_migration(self):
-        migrated = app.merge_config_data({"config_version": 5, "dark_brightness": 8})
-
-        self.assertEqual(migrated["dark_brightness"], 8)
 
     def test_app_theme_is_normalized(self):
         migrated = app.merge_config_data({"config_version": app.DEFAULT_CONFIG["config_version"], "app_theme": "purple"})
@@ -159,15 +152,6 @@ class MiscTests(unittest.TestCase):
     def test_clamp_int(self):
         self.assertEqual(app.clamp_int("200", 0, 100, 1), 100)
         self.assertEqual(app.clamp_int("bad", 0, 100, 7), 7)
-
-    def test_ddc_brightness_result_reports_partial_monitor_support(self):
-        ok, message = app.ddc_brightness_result(1, 2)
-
-        self.assertTrue(ok)
-        self.assertEqual(
-            message,
-            "DDC/CI brightness updated on 1 of 2 display(s); 1 display(s) did not accept it.",
-        )
 
     def test_flux_run_value_parses_quoted_path(self):
         parsed = app.parse_flux_run_value(r'"C:\Users\me\AppData\Local\FluxSoftware\Flux\flux.exe" /noshow')
