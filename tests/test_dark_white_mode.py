@@ -92,13 +92,39 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(migrated["restore_chrome_pages"])
         self.assertTrue(migrated["app_window_theme"])
         self.assertEqual(migrated["app_theme"], "white")
+        self.assertEqual(migrated["current_profile"], "outside")
         self.assertTrue(migrated["start_with_windows"])
         self.assertTrue(migrated["start_minimized_to_tray"])
+
+    def test_old_dark_config_migrates_to_night_profile(self):
+        migrated = app.merge_config_data({"config_version": 5, "last_mode": "dark"})
+
+        self.assertEqual(migrated["current_profile"], "night")
+        self.assertEqual(migrated["app_theme"], "dark")
+
+    def test_migration_preserves_manual_app_theme_when_profile_theming_is_disabled(self):
+        migrated = app.merge_config_data(
+            {
+                "config_version": 5,
+                "last_mode": "dark",
+                "app_window_theme": False,
+                "app_theme": "white",
+            }
+        )
+
+        self.assertEqual(migrated["current_profile"], "night")
+        self.assertFalse(migrated["app_window_theme"])
+        self.assertEqual(migrated["app_theme"], "white")
 
     def test_app_theme_is_normalized(self):
         migrated = app.merge_config_data({"config_version": app.DEFAULT_CONFIG["config_version"], "app_theme": "purple"})
 
         self.assertEqual(migrated["app_theme"], "white")
+
+    def test_profile_id_is_normalized(self):
+        migrated = app.merge_config_data({"config_version": app.DEFAULT_CONFIG["config_version"], "current_profile": "indoors"})
+
+        self.assertEqual(migrated["current_profile"], "work_indoors")
 
     def test_opposite_app_theme(self):
         self.assertEqual(app.opposite_app_theme("white"), "dark")
@@ -116,8 +142,9 @@ class ApplyWorkflowTests(unittest.TestCase):
             "_close_chrome_for_flag": True,
             "_reopen_chrome_after_flag": True,
             "_restore_chrome_pages": True,
-            "dark_flux_kelvin": 1200,
-            "white_flux_kelvin": 6500,
+            "night_flux_kelvin": 1200,
+            "outside_flux_kelvin": 6500,
+            "indoor_flux_kelvin": 2700,
         }
 
         with (
@@ -133,10 +160,10 @@ class ApplyWorkflowTests(unittest.TestCase):
                 return_value=app.StepResult("f.lux", True, "f.lux updated."),
             ) as set_flux_kelvin,
         ):
-            app.DarkWhiteModeApp._apply_in_thread(runner, True, settings)
+            app.DarkWhiteModeApp._apply_in_thread(runner, "night", settings)
 
-        target_dark, results = runner.result_queue.get_nowait()
-        self.assertTrue(target_dark)
+        target_profile, results = runner.result_queue.get_nowait()
+        self.assertEqual(target_profile, "night")
         set_chrome_force_dark.assert_not_called()
         set_flux_kelvin.assert_called_once_with(1200)
         self.assertEqual([result.name for result in results], ["Chrome", "Chrome", "f.lux"])
@@ -148,6 +175,21 @@ class MiscTests(unittest.TestCase):
         self.assertEqual(app.mode_change_status_text(False), "Changing to White mode. Please wait...")
         self.assertEqual(app.mode_change_button_text(True), "Changing to Dark Mode...")
         self.assertEqual(app.mode_change_button_text(False), "Changing to White Mode...")
+        self.assertEqual(app.profile_change_status_text("work_indoors"), "Changing to Work Indoors mode. Please wait...")
+        self.assertEqual(app.profile_change_button_text("outside"), "Changing to Outside...")
+
+    def test_profile_defaults(self):
+        settings = dict(app.DEFAULT_CONFIG)
+
+        self.assertEqual(app.profile_brightness("night", settings), 0)
+        self.assertEqual(app.profile_flux_kelvin("night", settings), 1200)
+        self.assertEqual(app.profile_brightness("outside", settings), 100)
+        self.assertEqual(app.profile_flux_kelvin("outside", settings), 6500)
+        self.assertEqual(app.profile_brightness("work_indoors", settings), 50)
+        self.assertEqual(app.profile_flux_kelvin("work_indoors", settings), 2700)
+        self.assertEqual(app.next_profile_id("night"), "outside")
+        self.assertEqual(app.next_profile_id("outside"), "work_indoors")
+        self.assertEqual(app.next_profile_id("work_indoors"), "night")
 
     def test_clamp_int(self):
         self.assertEqual(app.clamp_int("200", 0, 100, 1), 100)
