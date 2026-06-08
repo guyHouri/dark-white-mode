@@ -187,6 +187,7 @@ class MiscTests(unittest.TestCase):
         self.assertEqual(app.profile_flux_kelvin("outside", settings), 6500)
         self.assertEqual(app.profile_brightness("work_indoors", settings), 50)
         self.assertEqual(app.profile_flux_kelvin("work_indoors", settings), 2700)
+        self.assertTrue(app.profile_is_dark("work_indoors"))
         self.assertEqual(app.next_profile_id("night"), "outside")
         self.assertEqual(app.next_profile_id("outside"), "work_indoors")
         self.assertEqual(app.next_profile_id("work_indoors"), "night")

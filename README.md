@@ -19,7 +19,7 @@ Credits: Guy Houri
 
 - Night: dark appearance, Chrome force-dark enabled, 0% brightness, and 1200K f.lux.
 - Outside: light appearance, Chrome force-dark disabled, 100% brightness, and 6500K f.lux.
-- Work Indoors: light appearance, Chrome force-dark disabled, 50% brightness, and 2700K f.lux.
+- Work Indoors: dark appearance, Chrome force-dark enabled, 50% brightness, and 2700K f.lux.
 
 ## Notes
 

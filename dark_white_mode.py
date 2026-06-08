@@ -84,7 +84,7 @@ PROFILE_DEFINITIONS = {
     },
     "work_indoors": {
         "label": "Work Indoors",
-        "theme": "white",
+        "theme": "dark",
         "brightness_key": "indoor_brightness",
         "flux_key": "indoor_flux_kelvin",
         "default_brightness": 50,
@@ -1780,6 +1780,7 @@ def self_test() -> int:
     assert mode_change_status_text(True) == "Changing to Dark mode. Please wait..."
     assert mode_change_button_text(False) == "Changing to White Mode..."
     assert profile_change_status_text("work_indoors") == "Changing to Work Indoors mode. Please wait..."
+    assert profile_is_dark("work_indoors")
     assert profile_brightness("night", DEFAULT_CONFIG) == 0
     assert profile_brightness("outside", DEFAULT_CONFIG) == 100
     assert profile_flux_kelvin("work_indoors", DEFAULT_CONFIG) == 2700
