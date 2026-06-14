@@ -94,6 +94,22 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(migrated["app_theme"], "white")
         self.assertTrue(migrated["start_with_windows"])
         self.assertTrue(migrated["start_minimized_to_tray"])
+        self.assertFalse(migrated["external_monitor_brightness"])
+
+    def test_external_monitor_brightness_defaults_to_off(self):
+        migrated = app.merge_config_data({"config_version": app.DEFAULT_CONFIG["config_version"]})
+
+        self.assertFalse(migrated["external_monitor_brightness"])
+
+    def test_external_monitor_brightness_can_be_preserved_when_opted_in(self):
+        migrated = app.merge_config_data(
+            {
+                "config_version": app.DEFAULT_CONFIG["config_version"],
+                "external_monitor_brightness": True,
+            }
+        )
+
+        self.assertTrue(migrated["external_monitor_brightness"])
 
     def test_app_theme_is_normalized(self):
         migrated = app.merge_config_data({"config_version": app.DEFAULT_CONFIG["config_version"], "app_theme": "purple"})
@@ -111,6 +127,7 @@ class ApplyWorkflowTests(unittest.TestCase):
         settings = {
             "windows_theme": False,
             "brightness": False,
+            "external_monitor_brightness": False,
             "chrome_force_dark": True,
             "flux": True,
             "_close_chrome_for_flag": True,
@@ -141,8 +158,55 @@ class ApplyWorkflowTests(unittest.TestCase):
         set_flux_kelvin.assert_called_once_with(1200)
         self.assertEqual([result.name for result in results], ["Chrome", "Chrome", "f.lux"])
 
+    def test_brightness_workflow_passes_external_monitor_opt_in(self):
+        runner = type("Runner", (), {"result_queue": queue.Queue()})()
+        settings = {
+            "windows_theme": False,
+            "brightness": True,
+            "external_monitor_brightness": True,
+            "chrome_force_dark": False,
+            "flux": False,
+            "dark_brightness": 12,
+            "white_brightness": 80,
+        }
+
+        with mock.patch.object(
+            app,
+            "set_brightness",
+            return_value=app.StepResult("Brightness", True, "Brightness updated."),
+        ) as set_brightness:
+            app.DarkWhiteModeApp._apply_in_thread(runner, True, settings)
+
+        set_brightness.assert_called_once_with(12, True)
+
 
 class MiscTests(unittest.TestCase):
+    def test_brightness_skips_ddc_by_default(self):
+        with (
+            mock.patch.object(app, "IS_MAC", False),
+            mock.patch.object(app, "set_brightness_wmi", return_value=(True, "WMI brightness updated.")) as set_wmi,
+            mock.patch.object(app, "set_brightness_ddc") as set_ddc,
+        ):
+            result = app.set_brightness(45)
+
+        self.assertTrue(result.ok)
+        set_wmi.assert_called_once_with(45)
+        set_ddc.assert_not_called()
+        self.assertIn("External DDC/CI brightness skipped", result.message)
+
+    def test_brightness_uses_ddc_when_external_monitor_brightness_is_opted_in(self):
+        with (
+            mock.patch.object(app, "IS_MAC", False),
+            mock.patch.object(app, "set_brightness_wmi", return_value=(False, "No WMI display.")) as set_wmi,
+            mock.patch.object(app, "set_brightness_ddc", return_value=(True, "DDC/CI brightness updated.")) as set_ddc,
+        ):
+            result = app.set_brightness(45, external_monitor_brightness=True)
+
+        self.assertTrue(result.ok)
+        set_wmi.assert_called_once_with(45)
+        set_ddc.assert_called_once_with(45)
+        self.assertIn("DDC/CI brightness updated", result.message)
+
     def test_mode_change_loading_text_names_target_mode(self):
         self.assertEqual(app.mode_change_status_text(True), "Changing to Dark mode. Please wait...")
         self.assertEqual(app.mode_change_status_text(False), "Changing to White mode. Please wait...")

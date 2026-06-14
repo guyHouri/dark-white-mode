@@ -11,7 +11,7 @@ Credits: Guy Houri
 - Windows/macOS startup registration, so the app can launch automatically after restart and start minimized to the tray/menu bar.
 - A Windows Start Menu shortcut, so Windows Search can find the app with the same icon used by the executable.
 - Chrome's `chrome://flags` force-dark experiment by editing Chrome's per-user `Local State` file.
-- Display brightness through Windows WMI and DDC/CI monitor control where supported.
+- Display brightness through Windows WMI. External monitor DDC/CI brightness is a separate opt-in test option.
 - f.lux color temperature by updating the current user's f.lux registry values and restarting `flux.exe`.
 - A Windows notification-area tray icon with Show, Toggle mode, and Quit actions.
 
@@ -20,7 +20,7 @@ Credits: Guy Houri
 - Chrome must be closed before the flag file can be changed reliably. By default, the app closes Chrome automatically, force-closes background Chrome processes if needed, updates the flag, sets each Chrome profile to continue where it left off, suppresses Chrome's crash-restore bubble where supported, and reopens Chrome.
 - Closing or minimizing the window keeps the app running in the Windows system tray or hidden-icons overflow menu. Use the tray menu's Quit action to fully exit.
 - Startup is enabled by default. On Windows the app registers itself under the current user's startup apps. On macOS it writes a per-user LaunchAgent. Both launch with `--startup`, which starts minimized to the tray/menu bar.
-- Brightness control depends on the display. Windows uses WMI and DDC/CI where supported. macOS requires the optional Homebrew `brightness` tool.
+- Brightness control depends on the display. Windows uses WMI for the normal brightness toggle. External monitors may expose DDC/CI/VCP brightness, but support is inconsistent and some displays, including some ViewSonic units, may block software brightness changes. The DDC/CI path is off by default and should only be enabled for monitors you have tested. macOS requires the optional Homebrew `brightness` tool.
 - f.lux does not provide a stable public command-line preset API. Windows uses the per-user f.lux preference registry values: `Outdoor`, `Indoor`, and `Late`. macOS f.lux Kelvin switching is not supported yet.
 - The app works per desktop user and normally does not need administrator rights.
 
