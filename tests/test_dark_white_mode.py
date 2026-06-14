@@ -94,6 +94,9 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(migrated["app_theme"], "white")
         self.assertTrue(migrated["start_with_windows"])
         self.assertTrue(migrated["start_minimized_to_tray"])
+        self.assertFalse(migrated["software_dimming"])
+        self.assertEqual(migrated["dark_software_dimming"], app.DEFAULT_CONFIG["dark_software_dimming"])
+        self.assertEqual(migrated["white_software_dimming"], app.DEFAULT_CONFIG["white_software_dimming"])
 
     def test_app_theme_is_normalized(self):
         migrated = app.merge_config_data({"config_version": app.DEFAULT_CONFIG["config_version"], "app_theme": "purple"})
@@ -141,6 +144,111 @@ class ApplyWorkflowTests(unittest.TestCase):
         set_flux_kelvin.assert_called_once_with(1200)
         self.assertEqual([result.name for result in results], ["Chrome", "Chrome", "f.lux"])
 
+    def test_software_dimming_is_applied_after_flux(self):
+        runner = type("Runner", (), {"result_queue": queue.Queue()})()
+        settings = {
+            "windows_theme": False,
+            "brightness": False,
+            "software_dimming": True,
+            "chrome_force_dark": False,
+            "flux": True,
+            "dark_software_dimming": 20,
+            "white_software_dimming": 100,
+            "dark_flux_kelvin": 1200,
+            "white_flux_kelvin": 6500,
+        }
+        calls = []
+
+        def fake_flux(kelvin):
+            calls.append(("flux", kelvin))
+            return app.StepResult("f.lux", True, "f.lux updated.")
+
+        def fake_dimming(percent):
+            calls.append(("software", percent))
+            return app.StepResult("Software dimming", True, "Software dimming updated.")
+
+        with (
+            mock.patch.object(app.software_gamma_dimmer, "is_active", return_value=False),
+            mock.patch.object(app, "set_flux_kelvin", side_effect=fake_flux),
+            mock.patch.object(app, "set_software_dimming", side_effect=fake_dimming),
+        ):
+            app.DarkWhiteModeApp._apply_in_thread(runner, True, settings)
+
+        target_dark, results = runner.result_queue.get_nowait()
+        self.assertTrue(target_dark)
+        self.assertEqual(calls, [("flux", 1200), ("software", 20)])
+        self.assertEqual([result.name for result in results], ["f.lux", "Software dimming"])
+
+    def test_software_dimming_skips_hardware_brightness(self):
+        runner = type("Runner", (), {"result_queue": queue.Queue()})()
+        settings = {
+            "windows_theme": False,
+            "brightness": True,
+            "software_dimming": True,
+            "chrome_force_dark": False,
+            "flux": False,
+            "dark_brightness": 1,
+            "white_brightness": 70,
+            "dark_software_dimming": 20,
+            "white_software_dimming": 100,
+        }
+
+        with (
+            mock.patch.object(app.software_gamma_dimmer, "is_active", return_value=False),
+            mock.patch.object(app, "set_brightness") as set_brightness,
+            mock.patch.object(
+                app,
+                "set_software_dimming",
+                return_value=app.StepResult("Software dimming", True, "Software dimming updated."),
+            ),
+        ):
+            app.DarkWhiteModeApp._apply_in_thread(runner, True, settings)
+
+        _target_dark, results = runner.result_queue.get_nowait()
+        set_brightness.assert_not_called()
+        self.assertEqual([result.name for result in results], ["Brightness", "Software dimming"])
+        self.assertIn("Hardware brightness skipped", results[0].message)
+
+    def test_active_software_dimming_is_restored_before_mode_changes(self):
+        runner = type("Runner", (), {"result_queue": queue.Queue()})()
+        settings = {
+            "windows_theme": False,
+            "brightness": False,
+            "software_dimming": True,
+            "chrome_force_dark": False,
+            "flux": True,
+            "dark_software_dimming": 20,
+            "white_software_dimming": 100,
+            "dark_flux_kelvin": 1200,
+            "white_flux_kelvin": 6500,
+        }
+        calls = []
+
+        def fake_restore():
+            calls.append(("restore", None))
+            return app.StepResult("Software dimming", True, "Software dimming restored.")
+
+        def fake_flux(kelvin):
+            calls.append(("flux", kelvin))
+            return app.StepResult("f.lux", True, "f.lux updated.")
+
+        def fake_dimming(percent):
+            calls.append(("software", percent))
+            return app.StepResult("Software dimming", True, "Software dimming updated.")
+
+        with (
+            mock.patch.object(app.software_gamma_dimmer, "is_active", return_value=True),
+            mock.patch.object(app, "restore_software_dimming", side_effect=fake_restore),
+            mock.patch.object(app, "set_flux_kelvin", side_effect=fake_flux),
+            mock.patch.object(app, "set_software_dimming", side_effect=fake_dimming),
+        ):
+            app.DarkWhiteModeApp._apply_in_thread(runner, False, settings)
+
+        target_dark, results = runner.result_queue.get_nowait()
+        self.assertFalse(target_dark)
+        self.assertEqual(calls, [("restore", None), ("flux", 6500), ("software", 100)])
+        self.assertEqual([result.name for result in results], ["Software dimming", "f.lux", "Software dimming"])
+
 
 class MiscTests(unittest.TestCase):
     def test_mode_change_loading_text_names_target_mode(self):
@@ -152,6 +260,22 @@ class MiscTests(unittest.TestCase):
     def test_clamp_int(self):
         self.assertEqual(app.clamp_int("200", 0, 100, 1), 100)
         self.assertEqual(app.clamp_int("bad", 0, 100, 7), 7)
+
+    def test_normalize_software_dimming_percent(self):
+        self.assertEqual(app.normalize_software_dimming_percent("2"), 5)
+        self.assertEqual(app.normalize_software_dimming_percent("40"), 40)
+        self.assertEqual(app.normalize_software_dimming_percent("200"), 100)
+        self.assertEqual(app.normalize_software_dimming_percent("bad"), 100)
+
+    def test_build_dimmed_gamma_ramp_values(self):
+        values = [0, 1000, 65535]
+
+        self.assertEqual(app.build_dimmed_gamma_ramp_values(values, 25), [0, 250, 16384])
+
+    def test_build_dimmed_gamma_table_values(self):
+        values = [0.0, 0.5, 1.0]
+
+        self.assertEqual(app.build_dimmed_gamma_table_values(values, 25), [0.0, 0.125, 0.25])
 
     def test_flux_run_value_parses_quoted_path(self):
         parsed = app.parse_flux_run_value(r'"C:\Users\me\AppData\Local\FluxSoftware\Flux\flux.exe" /noshow')

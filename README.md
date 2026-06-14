@@ -12,6 +12,7 @@ Credits: Guy Houri
 - A Windows Start Menu shortcut, so Windows Search can find the app with the same icon used by the executable.
 - Chrome's `chrome://flags` force-dark experiment by editing Chrome's per-user `Local State` file.
 - Display brightness through Windows WMI and DDC/CI monitor control where supported.
+- Experimental PWM-safe software dimming on Windows and macOS through display gamma/LUT tables, so the dark profile can dim pixels without lowering monitor hardware brightness.
 - f.lux color temperature by updating the current user's f.lux registry values and restarting `flux.exe`.
 - A Windows notification-area tray icon with Show, Toggle mode, and Quit actions.
 
@@ -21,6 +22,7 @@ Credits: Guy Houri
 - Closing or minimizing the window keeps the app running in the Windows system tray or hidden-icons overflow menu. Use the tray menu's Quit action to fully exit.
 - Startup is enabled by default. On Windows the app registers itself under the current user's startup apps. On macOS it writes a per-user LaunchAgent. Both launch with `--startup`, which starts minimized to the tray/menu bar.
 - Brightness control depends on the display. Windows uses WMI and DDC/CI where supported. macOS requires the optional Homebrew `brightness` tool.
+- PWM-safe software dimming is off by default. It stores the current gamma/LUT tables before dimming, restores them before each mode change, and restores them again when the app quits or the Python process exits. Because f.lux, HDR, Night light, True Tone, graphics drivers, and calibration tools can also own the gamma/LUT pipeline, the app reapplies software dimming after f.lux changes and may show a warning if the OS or driver rejects gamma changes.
 - f.lux does not provide a stable public command-line preset API. Windows uses the per-user f.lux preference registry values: `Outdoor`, `Indoor`, and `Late`. macOS f.lux Kelvin switching is not supported yet.
 - The app works per desktop user and normally does not need administrator rights.
 
