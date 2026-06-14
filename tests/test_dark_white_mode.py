@@ -179,6 +179,36 @@ class ApplyWorkflowTests(unittest.TestCase):
         self.assertEqual(calls, [("flux", 1200), ("software", 20)])
         self.assertEqual([result.name for result in results], ["f.lux", "Software dimming"])
 
+    def test_software_dimming_skips_hardware_brightness(self):
+        runner = type("Runner", (), {"result_queue": queue.Queue()})()
+        settings = {
+            "windows_theme": False,
+            "brightness": True,
+            "software_dimming": True,
+            "chrome_force_dark": False,
+            "flux": False,
+            "dark_brightness": 1,
+            "white_brightness": 70,
+            "dark_software_dimming": 20,
+            "white_software_dimming": 100,
+        }
+
+        with (
+            mock.patch.object(app.software_gamma_dimmer, "is_active", return_value=False),
+            mock.patch.object(app, "set_brightness") as set_brightness,
+            mock.patch.object(
+                app,
+                "set_software_dimming",
+                return_value=app.StepResult("Software dimming", True, "Software dimming updated."),
+            ),
+        ):
+            app.DarkWhiteModeApp._apply_in_thread(runner, True, settings)
+
+        _target_dark, results = runner.result_queue.get_nowait()
+        set_brightness.assert_not_called()
+        self.assertEqual([result.name for result in results], ["Brightness", "Software dimming"])
+        self.assertIn("Hardware brightness skipped", results[0].message)
+
     def test_active_software_dimming_is_restored_before_mode_changes(self):
         runner = type("Runner", (), {"result_queue": queue.Queue()})()
         settings = {

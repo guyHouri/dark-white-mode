@@ -1938,7 +1938,15 @@ class DarkWhiteModeApp(tk.Tk):
             results.append(restore_software_dimming())
         if settings["windows_theme"]:
             results.append(set_system_mode(target_dark))
-        if settings["brightness"]:
+        if settings["brightness"] and settings.get("software_dimming"):
+            results.append(
+                StepResult(
+                    "Brightness",
+                    True,
+                    "Hardware brightness skipped because PWM-safe software dimming is enabled.",
+                )
+            )
+        elif settings["brightness"]:
             level = settings["dark_brightness"] if target_dark else settings["white_brightness"]
             results.append(set_brightness(level))
         if settings["chrome_force_dark"]:
