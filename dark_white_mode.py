@@ -1,3 +1,4 @@
+import atexit
 import ctypes
 import json
 import os
@@ -64,7 +65,7 @@ def config_path() -> Path:
 
 
 DEFAULT_CONFIG = {
-    "config_version": 5,
+    "config_version": 6,
     "start_with_windows": True,
     "start_minimized_to_tray": True,
     "app_window_theme": True,
@@ -72,12 +73,15 @@ DEFAULT_CONFIG = {
     "windows_theme": True,
     "chrome_force_dark": True,
     "brightness": True,
+    "software_dimming": False,
     "flux": True,
     "prompt_before_closing_chrome": False,
     "reopen_chrome_after_flag": True,
     "restore_chrome_pages": True,
     "dark_brightness": 1,
     "white_brightness": 70,
+    "dark_software_dimming": 25,
+    "white_software_dimming": 100,
     "dark_flux_kelvin": 1200,
     "white_flux_kelvin": 6500,
     "last_mode": "white",
@@ -151,6 +155,10 @@ def merge_config_data(data: dict) -> dict:
     if int(data.get("config_version", 1)) < 5:
         merged["start_with_windows"] = True
         merged["start_minimized_to_tray"] = True
+    if int(data.get("config_version", 1)) < 6:
+        merged["software_dimming"] = False
+        merged["dark_software_dimming"] = DEFAULT_CONFIG["dark_software_dimming"]
+        merged["white_software_dimming"] = DEFAULT_CONFIG["white_software_dimming"]
     merged["app_theme"] = normalize_app_theme(merged.get("app_theme"))
     merged["config_version"] = DEFAULT_CONFIG["config_version"]
     return merged
@@ -922,6 +930,221 @@ def set_brightness(level: int) -> StepResult:
     return StepResult("Brightness", False, "Brightness was not changed. " + " ".join(messages))
 
 
+GAMMA_RAMP_ENTRIES = 256
+GAMMA_RAMP_VALUES = GAMMA_RAMP_ENTRIES * 3
+MIN_SOFTWARE_DIMMING_PERCENT = 5
+MAX_SOFTWARE_DIMMING_PERCENT = 100
+DISPLAY_DEVICE_ACTIVE = 0x00000001
+
+
+class DisplayDevice(ctypes.Structure):
+    _fields_ = [
+        ("cb", ctypes.c_ulong),
+        ("DeviceName", ctypes.c_wchar * 32),
+        ("DeviceString", ctypes.c_wchar * 128),
+        ("StateFlags", ctypes.c_ulong),
+        ("DeviceID", ctypes.c_wchar * 128),
+        ("DeviceKey", ctypes.c_wchar * 128),
+    ]
+
+
+GammaRamp = ctypes.c_ushort * GAMMA_RAMP_VALUES
+
+
+def normalize_software_dimming_percent(value) -> int:
+    return clamp_int(value, MIN_SOFTWARE_DIMMING_PERCENT, MAX_SOFTWARE_DIMMING_PERCENT, MAX_SOFTWARE_DIMMING_PERCENT)
+
+
+def build_dimmed_gamma_ramp_values(values: list[int], percent: int) -> list[int]:
+    percent = normalize_software_dimming_percent(percent)
+    factor = percent / 100
+    return [max(0, min(65535, int(round(int(value) * factor)))) for value in values]
+
+
+def _active_windows_display_names() -> list[str]:
+    if not IS_WINDOWS:
+        return []
+    user32 = ctypes.windll.user32
+    user32.EnumDisplayDevicesW.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_ulong,
+        ctypes.POINTER(DisplayDevice),
+        ctypes.c_ulong,
+    ]
+    user32.EnumDisplayDevicesW.restype = ctypes.c_bool
+
+    names = []
+    index = 0
+    while True:
+        device = DisplayDevice()
+        device.cb = ctypes.sizeof(DisplayDevice)
+        if not user32.EnumDisplayDevicesW(None, index, ctypes.byref(device), 0):
+            break
+        if device.StateFlags & DISPLAY_DEVICE_ACTIVE:
+            names.append(device.DeviceName)
+        index += 1
+    return names
+
+
+def _display_dc_handles() -> list[tuple[str, int, str]]:
+    if not IS_WINDOWS:
+        return []
+
+    user32 = ctypes.windll.user32
+    gdi32 = ctypes.windll.gdi32
+    gdi32.CreateDCW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_void_p]
+    gdi32.CreateDCW.restype = ctypes.c_void_p
+
+    handles = []
+    for display_name in _active_windows_display_names():
+        hdc = gdi32.CreateDCW("DISPLAY", display_name, None, None)
+        if hdc:
+            handles.append((display_name, hdc, "delete"))
+
+    if not handles:
+        user32.GetDC.argtypes = [ctypes.c_void_p]
+        user32.GetDC.restype = ctypes.c_void_p
+        hdc = user32.GetDC(None)
+        if hdc:
+            handles.append(("desktop", hdc, "release"))
+    return handles
+
+
+def _release_display_dc(hdc: int, release_mode: str) -> None:
+    if release_mode == "release":
+        user32 = ctypes.windll.user32
+        user32.ReleaseDC.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        user32.ReleaseDC.restype = ctypes.c_int
+        user32.ReleaseDC(None, hdc)
+    else:
+        gdi32 = ctypes.windll.gdi32
+        gdi32.DeleteDC.argtypes = [ctypes.c_void_p]
+        gdi32.DeleteDC.restype = ctypes.c_bool
+        gdi32.DeleteDC(hdc)
+
+
+def read_windows_gamma_ramps() -> tuple[list[tuple[str, list[int]]], list[str]]:
+    if not IS_WINDOWS:
+        return [], ["Software dimming is only available on Windows."]
+
+    gdi32 = ctypes.windll.gdi32
+    gdi32.GetDeviceGammaRamp.argtypes = [ctypes.c_void_p, ctypes.POINTER(GammaRamp)]
+    gdi32.GetDeviceGammaRamp.restype = ctypes.c_bool
+
+    ramps = []
+    errors = []
+    for name, hdc, release_mode in _display_dc_handles():
+        try:
+            ramp = GammaRamp()
+            if gdi32.GetDeviceGammaRamp(hdc, ctypes.byref(ramp)):
+                ramps.append((name, list(ramp)))
+            else:
+                errors.append(f"{name}: could not read gamma ramp.")
+        finally:
+            _release_display_dc(hdc, release_mode)
+
+    if not ramps and not errors:
+        errors.append("No display gamma device context was available.")
+    return ramps, errors
+
+
+def write_windows_gamma_ramps(ramps: list[tuple[str, list[int]]]) -> tuple[int, list[str]]:
+    if not IS_WINDOWS:
+        return 0, ["Software dimming is only available on Windows."]
+
+    target_by_name = {name: values for name, values in ramps}
+    gdi32 = ctypes.windll.gdi32
+    gdi32.SetDeviceGammaRamp.argtypes = [ctypes.c_void_p, ctypes.POINTER(GammaRamp)]
+    gdi32.SetDeviceGammaRamp.restype = ctypes.c_bool
+
+    changed = 0
+    errors = []
+    for name, hdc, release_mode in _display_dc_handles():
+        values = target_by_name.get(name)
+        if values is None:
+            continue
+        try:
+            ramp = GammaRamp(*values)
+            if gdi32.SetDeviceGammaRamp(hdc, ctypes.byref(ramp)):
+                changed += 1
+            else:
+                errors.append(f"{name}: could not write gamma ramp.")
+        finally:
+            _release_display_dc(hdc, release_mode)
+
+    if not changed and not errors:
+        errors.append("No matching display gamma device context was available.")
+    return changed, errors
+
+
+class SoftwareGammaDimmer:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._original_ramps: list[tuple[str, list[int]]] = []
+
+    def is_active(self) -> bool:
+        with self._lock:
+            return bool(self._original_ramps)
+
+    def apply(self, percent: int) -> StepResult:
+        percent = normalize_software_dimming_percent(percent)
+        with self._lock:
+            if percent >= MAX_SOFTWARE_DIMMING_PERCENT:
+                return self._restore_locked()
+            if not self._original_ramps:
+                ramps, errors = read_windows_gamma_ramps()
+                if not ramps:
+                    return StepResult("Software dimming", False, "Software dimming was not applied. " + " ".join(errors))
+                self._original_ramps = ramps
+
+            dimmed = [
+                (name, build_dimmed_gamma_ramp_values(values, percent))
+                for name, values in self._original_ramps
+            ]
+            changed, errors = write_windows_gamma_ramps(dimmed)
+            if changed:
+                message = f"Software dimming set to {percent}% on {changed} display(s)."
+                if errors:
+                    message += " Some displays failed: " + " ".join(errors)
+                return StepResult("Software dimming", True, message)
+
+            self._restore_locked()
+            return StepResult("Software dimming", False, "Software dimming was not applied. " + " ".join(errors))
+
+    def restore(self) -> StepResult:
+        with self._lock:
+            return self._restore_locked()
+
+    def _restore_locked(self) -> StepResult:
+        if not self._original_ramps:
+            return StepResult("Software dimming", True, "Software dimming is already restored.")
+
+        changed, errors = write_windows_gamma_ramps(self._original_ramps)
+        expected = len(self._original_ramps)
+        if changed == expected:
+            self._original_ramps = []
+            return StepResult("Software dimming", True, f"Software dimming restored on {changed} display(s).")
+        if changed:
+            return StepResult(
+                "Software dimming",
+                False,
+                f"Software dimming restored on {changed} of {expected} display(s). " + " ".join(errors),
+            )
+        return StepResult("Software dimming", False, "Software dimming restore failed. " + " ".join(errors))
+
+
+software_gamma_dimmer = SoftwareGammaDimmer()
+atexit.register(software_gamma_dimmer.restore)
+
+
+def set_software_dimming(percent: int) -> StepResult:
+    return software_gamma_dimmer.apply(percent)
+
+
+def restore_software_dimming() -> StepResult:
+    return software_gamma_dimmer.restore()
+
+
 def find_command(candidates: list[str]) -> Path | None:
     for candidate in candidates:
         path = shutil.which(candidate)
@@ -1042,8 +1265,8 @@ class DarkWhiteModeApp(tk.Tk):
         self.app_icon_photo = None
         self.apply_window_icon()
         self.title(APP_NAME)
-        self.geometry("520x820")
-        self.minsize(500, 740)
+        self.geometry("540x900")
+        self.minsize(520, 800)
         self.config_data = load_config()
         self.start_hidden = start_hidden
         self.current_mode = read_system_mode()
@@ -1115,6 +1338,7 @@ class DarkWhiteModeApp(tk.Tk):
                 ("windows_theme", "System theme"),
                 ("chrome_force_dark", "Chrome force-dark flag"),
                 ("brightness", "Display brightness"),
+                ("software_dimming", "PWM-safe software dimming (experimental)"),
                 ("flux", "f.lux color temperature"),
             ]
         ):
@@ -1128,8 +1352,10 @@ class DarkWhiteModeApp(tk.Tk):
 
         self._add_spinbox(values, 0, "Dark brightness", "dark_brightness", 0, 100, "%")
         self._add_spinbox(values, 1, "White brightness", "white_brightness", 0, 100, "%")
-        self._add_spinbox(values, 2, "Dark f.lux", "dark_flux_kelvin", 800, 10000, "K")
-        self._add_spinbox(values, 3, "White f.lux", "white_flux_kelvin", 800, 10000, "K")
+        self._add_spinbox(values, 2, "Dark software dimming", "dark_software_dimming", 5, 100, "%")
+        self._add_spinbox(values, 3, "White software dimming", "white_software_dimming", 5, 100, "%")
+        self._add_spinbox(values, 4, "Dark f.lux", "dark_flux_kelvin", 800, 10000, "K")
+        self._add_spinbox(values, 5, "White f.lux", "white_flux_kelvin", 800, 10000, "K")
 
         chrome_var = tk.BooleanVar(value=bool(self.config_data["prompt_before_closing_chrome"]))
         self.vars["prompt_before_closing_chrome"] = chrome_var
@@ -1357,6 +1583,10 @@ class DarkWhiteModeApp(tk.Tk):
 
     def quit_app(self):
         self.quitting = True
+        if software_gamma_dimmer.is_active():
+            result = restore_software_dimming()
+            prefix = "OK" if result.ok else "WARN"
+            self.log(f"{prefix} - {result.name}: {result.message}")
         if self.tray_icon is not None:
             try:
                 self.tray_icon.stop()
@@ -1476,6 +1706,7 @@ class DarkWhiteModeApp(tk.Tk):
             "windows_theme",
             "chrome_force_dark",
             "brightness",
+            "software_dimming",
             "flux",
             "prompt_before_closing_chrome",
             "reopen_chrome_after_flag",
@@ -1484,6 +1715,8 @@ class DarkWhiteModeApp(tk.Tk):
             settings[key] = bool(self.vars[key].get())
         settings["dark_brightness"] = clamp_int(self.vars["dark_brightness"].get(), 0, 100, 1)
         settings["white_brightness"] = clamp_int(self.vars["white_brightness"].get(), 0, 100, 70)
+        settings["dark_software_dimming"] = normalize_software_dimming_percent(self.vars["dark_software_dimming"].get())
+        settings["white_software_dimming"] = normalize_software_dimming_percent(self.vars["white_software_dimming"].get())
         settings["dark_flux_kelvin"] = clamp_int(self.vars["dark_flux_kelvin"].get(), 800, 10000, 1200)
         settings["white_flux_kelvin"] = clamp_int(self.vars["white_flux_kelvin"].get(), 800, 10000, 6500)
         return settings
@@ -1531,6 +1764,8 @@ class DarkWhiteModeApp(tk.Tk):
 
     def _apply_in_thread(self, target_dark: bool, settings: dict):
         results = []
+        if software_gamma_dimmer.is_active():
+            results.append(restore_software_dimming())
         if settings["windows_theme"]:
             results.append(set_system_mode(target_dark))
         if settings["brightness"]:
@@ -1555,6 +1790,9 @@ class DarkWhiteModeApp(tk.Tk):
         if settings["flux"]:
             kelvin = settings["dark_flux_kelvin"] if target_dark else settings["white_flux_kelvin"]
             results.append(set_flux_kelvin(kelvin))
+        if settings.get("software_dimming"):
+            percent = settings["dark_software_dimming"] if target_dark else settings["white_software_dimming"]
+            results.append(set_software_dimming(percent))
         self.result_queue.put((target_dark, results))
 
     def _check_result_queue(self):
@@ -1591,9 +1829,13 @@ def self_test() -> int:
     assert disabled["browser"]["enabled_labs_experiments"] == ["abc@1"]
     assert clamp_int("200", 0, 100, 1) == 100
     assert clamp_int("bad", 0, 100, 7) == 7
+    assert normalize_software_dimming_percent("2") == MIN_SOFTWARE_DIMMING_PERCENT
+    assert normalize_software_dimming_percent("bad") == MAX_SOFTWARE_DIMMING_PERCENT
+    assert build_dimmed_gamma_ramp_values([0, 1000, 65535], 25) == [0, 250, 16384]
     assert parse_flux_run_value(r'"C:\Users\me\AppData\Local\FluxSoftware\Flux\flux.exe" /noshow')
     assert "reopen_chrome_after_flag" in load_config()
     assert "restore_chrome_pages" in load_config()
+    assert "software_dimming" in load_config()
     assert normalize_app_theme("dark") == "dark"
     assert normalize_app_theme("bad") == "white"
     assert opposite_app_theme("white") == "dark"
