@@ -64,7 +64,7 @@ def config_path() -> Path:
 
 
 DEFAULT_CONFIG = {
-    "config_version": 5,
+    "config_version": 6,
     "start_with_windows": True,
     "start_minimized_to_tray": True,
     "app_window_theme": True,
@@ -72,6 +72,7 @@ DEFAULT_CONFIG = {
     "windows_theme": True,
     "chrome_force_dark": True,
     "brightness": True,
+    "external_monitor_brightness": False,
     "flux": True,
     "prompt_before_closing_chrome": False,
     "reopen_chrome_after_flag": True,
@@ -151,6 +152,8 @@ def merge_config_data(data: dict) -> dict:
     if int(data.get("config_version", 1)) < 5:
         merged["start_with_windows"] = True
         merged["start_minimized_to_tray"] = True
+    if int(data.get("config_version", 1)) < 6:
+        merged["external_monitor_brightness"] = False
     merged["app_theme"] = normalize_app_theme(merged.get("app_theme"))
     merged["config_version"] = DEFAULT_CONFIG["config_version"]
     return merged
@@ -901,7 +904,7 @@ def set_brightness_ddc(level: int) -> tuple[bool, str]:
     return False, "No DDC/CI-capable physical display was found."
 
 
-def set_brightness(level: int) -> StepResult:
+def set_brightness(level: int, external_monitor_brightness: bool = False) -> StepResult:
     if IS_MAC:
         return set_brightness_macos(level)
 
@@ -913,9 +916,14 @@ def set_brightness(level: int) -> StepResult:
     messages.append(wmi_message)
     ok = ok or wmi_ok
 
-    ddc_ok, ddc_message = set_brightness_ddc(level)
-    messages.append(ddc_message)
-    ok = ok or ddc_ok
+    if external_monitor_brightness:
+        ddc_ok, ddc_message = set_brightness_ddc(level)
+        messages.append(ddc_message)
+        ok = ok or ddc_ok
+    else:
+        messages.append(
+            "External DDC/CI brightness skipped; enable the external monitor option only for displays you have tested."
+        )
 
     if ok:
         return StepResult("Brightness", True, f"Brightness set to {level}%. " + " ".join(messages))
@@ -1115,6 +1123,7 @@ class DarkWhiteModeApp(tk.Tk):
                 ("windows_theme", "System theme"),
                 ("chrome_force_dark", "Chrome force-dark flag"),
                 ("brightness", "Display brightness"),
+                ("external_monitor_brightness", "External monitor brightness (DDC/CI test)"),
                 ("flux", "f.lux color temperature"),
             ]
         ):
@@ -1476,6 +1485,7 @@ class DarkWhiteModeApp(tk.Tk):
             "windows_theme",
             "chrome_force_dark",
             "brightness",
+            "external_monitor_brightness",
             "flux",
             "prompt_before_closing_chrome",
             "reopen_chrome_after_flag",
@@ -1535,7 +1545,7 @@ class DarkWhiteModeApp(tk.Tk):
             results.append(set_system_mode(target_dark))
         if settings["brightness"]:
             level = settings["dark_brightness"] if target_dark else settings["white_brightness"]
-            results.append(set_brightness(level))
+            results.append(set_brightness(level, bool(settings.get("external_monitor_brightness"))))
         if settings["chrome_force_dark"]:
             chrome_can_update = True
             if settings.get("_close_chrome_for_flag"):
@@ -1601,6 +1611,7 @@ def self_test() -> int:
     assert mode_change_button_text(False) == "Changing to White Mode..."
     assert "app_window_theme" in load_config()
     assert "start_with_windows" in load_config()
+    assert merge_config_data({}).get("external_monitor_brightness") is False
     assert build_startup_command([r"C:\Program Files\App\dark-white-mode.exe"], True).endswith('" --startup')
     shortcut_script = build_windows_shortcut_script(
         Path(r"C:\Users\me\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\dark-white-mode.lnk"),
