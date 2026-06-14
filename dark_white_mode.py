@@ -1,5 +1,6 @@
 import atexit
 import ctypes
+import ctypes.util
 import json
 import os
 import plistlib
@@ -961,6 +962,12 @@ def build_dimmed_gamma_ramp_values(values: list[int], percent: int) -> list[int]
     return [max(0, min(65535, int(round(int(value) * factor)))) for value in values]
 
 
+def build_dimmed_gamma_table_values(values: list[float], percent: int) -> list[float]:
+    percent = normalize_software_dimming_percent(percent)
+    factor = percent / 100
+    return [max(0.0, min(1.0, float(value) * factor)) for value in values]
+
+
 def _active_windows_display_names() -> list[str]:
     if not IS_WINDOWS:
         return []
@@ -1077,10 +1084,176 @@ def write_windows_gamma_ramps(ramps: list[tuple[str, list[int]]]) -> tuple[int, 
     return changed, errors
 
 
+CGGammaValue = ctypes.c_float
+
+
+def _core_graphics():
+    path = ctypes.util.find_library("CoreGraphics")
+    if not path:
+        path = str(Path("/System/Library/Frameworks") / "CoreGraphics.framework" / "CoreGraphics")
+    return ctypes.cdll.LoadLibrary(path)
+
+
+def _active_macos_display_ids() -> tuple[list[int], list[str]]:
+    if not IS_MAC:
+        return [], ["Software dimming is only available on Windows and macOS."]
+
+    try:
+        cg = _core_graphics()
+        cg.CGGetActiveDisplayList.argtypes = [
+            ctypes.c_uint32,
+            ctypes.POINTER(ctypes.c_uint32),
+            ctypes.POINTER(ctypes.c_uint32),
+        ]
+        cg.CGGetActiveDisplayList.restype = ctypes.c_int32
+
+        max_displays = 32
+        displays = (ctypes.c_uint32 * max_displays)()
+        display_count = ctypes.c_uint32()
+        error = cg.CGGetActiveDisplayList(max_displays, displays, ctypes.byref(display_count))
+        if error != 0:
+            return [], [f"CoreGraphics display enumeration failed with error {error}."]
+        return [int(displays[index]) for index in range(display_count.value)], []
+    except Exception as exc:
+        return [], [f"CoreGraphics display enumeration failed: {exc}"]
+
+
+def read_macos_gamma_tables() -> tuple[list[tuple[int, list[float], list[float], list[float]]], list[str]]:
+    displays, errors = _active_macos_display_ids()
+    if not displays:
+        return [], errors or ["No active macOS displays were found."]
+
+    try:
+        cg = _core_graphics()
+        cg.CGDisplayGammaTableCapacity.argtypes = [ctypes.c_uint32]
+        cg.CGDisplayGammaTableCapacity.restype = ctypes.c_uint32
+        cg.CGGetDisplayTransferByTable.argtypes = [
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.POINTER(CGGammaValue),
+            ctypes.POINTER(CGGammaValue),
+            ctypes.POINTER(CGGammaValue),
+            ctypes.POINTER(ctypes.c_uint32),
+        ]
+        cg.CGGetDisplayTransferByTable.restype = ctypes.c_int32
+    except Exception as exc:
+        return [], [f"CoreGraphics gamma access failed: {exc}"]
+
+    tables = []
+    for display_id in displays:
+        try:
+            capacity = int(cg.CGDisplayGammaTableCapacity(display_id))
+            if capacity <= 0:
+                errors.append(f"Display {display_id}: gamma table capacity is unavailable.")
+                continue
+            red = (CGGammaValue * capacity)()
+            green = (CGGammaValue * capacity)()
+            blue = (CGGammaValue * capacity)()
+            sample_count = ctypes.c_uint32()
+            error = cg.CGGetDisplayTransferByTable(
+                display_id,
+                capacity,
+                red,
+                green,
+                blue,
+                ctypes.byref(sample_count),
+            )
+            if error != 0 or sample_count.value == 0:
+                errors.append(f"Display {display_id}: could not read gamma table.")
+                continue
+            count = int(sample_count.value)
+            tables.append((display_id, list(red[:count]), list(green[:count]), list(blue[:count])))
+        except Exception as exc:
+            errors.append(f"Display {display_id}: gamma table read failed: {exc}")
+
+    return tables, errors
+
+
+def write_macos_gamma_tables(
+    tables: list[tuple[int, list[float], list[float], list[float]]],
+) -> tuple[int, list[str]]:
+    if not IS_MAC:
+        return 0, ["Software dimming is only available on Windows and macOS."]
+
+    target_by_id = {display_id: (red, green, blue) for display_id, red, green, blue in tables}
+    displays, errors = _active_macos_display_ids()
+    if not displays:
+        return 0, errors or ["No active macOS displays were found."]
+
+    try:
+        cg = _core_graphics()
+        cg.CGSetDisplayTransferByTable.argtypes = [
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.POINTER(CGGammaValue),
+            ctypes.POINTER(CGGammaValue),
+            ctypes.POINTER(CGGammaValue),
+        ]
+        cg.CGSetDisplayTransferByTable.restype = ctypes.c_int32
+    except Exception as exc:
+        return 0, [f"CoreGraphics gamma access failed: {exc}"]
+
+    changed = 0
+    for display_id in displays:
+        values = target_by_id.get(display_id)
+        if values is None:
+            continue
+        red, green, blue = values
+        table_size = min(len(red), len(green), len(blue))
+        if table_size <= 0:
+            errors.append(f"Display {display_id}: gamma table is empty.")
+            continue
+        red_array = (CGGammaValue * table_size)(*red[:table_size])
+        green_array = (CGGammaValue * table_size)(*green[:table_size])
+        blue_array = (CGGammaValue * table_size)(*blue[:table_size])
+        error = cg.CGSetDisplayTransferByTable(display_id, table_size, red_array, green_array, blue_array)
+        if error == 0:
+            changed += 1
+        else:
+            errors.append(f"Display {display_id}: could not write gamma table.")
+
+    if not changed and not errors:
+        errors.append("No matching macOS display gamma table was available.")
+    return changed, errors
+
+
+def read_display_gamma_ramps():
+    if IS_MAC:
+        return read_macos_gamma_tables()
+    if IS_WINDOWS:
+        return read_windows_gamma_ramps()
+    return [], ["Software dimming is only available on Windows and macOS."]
+
+
+def write_display_gamma_ramps(ramps):
+    if IS_MAC:
+        return write_macos_gamma_tables(ramps)
+    if IS_WINDOWS:
+        return write_windows_gamma_ramps(ramps)
+    return 0, ["Software dimming is only available on Windows and macOS."]
+
+
+def build_dimmed_display_gamma_ramps(ramps, percent: int):
+    if IS_MAC:
+        return [
+            (
+                display_id,
+                build_dimmed_gamma_table_values(red, percent),
+                build_dimmed_gamma_table_values(green, percent),
+                build_dimmed_gamma_table_values(blue, percent),
+            )
+            for display_id, red, green, blue in ramps
+        ]
+    return [
+        (name, build_dimmed_gamma_ramp_values(values, percent))
+        for name, values in ramps
+    ]
+
+
 class SoftwareGammaDimmer:
     def __init__(self):
         self._lock = threading.Lock()
-        self._original_ramps: list[tuple[str, list[int]]] = []
+        self._original_ramps = []
 
     def is_active(self) -> bool:
         with self._lock:
@@ -1092,16 +1265,13 @@ class SoftwareGammaDimmer:
             if percent >= MAX_SOFTWARE_DIMMING_PERCENT:
                 return self._restore_locked()
             if not self._original_ramps:
-                ramps, errors = read_windows_gamma_ramps()
+                ramps, errors = read_display_gamma_ramps()
                 if not ramps:
                     return StepResult("Software dimming", False, "Software dimming was not applied. " + " ".join(errors))
                 self._original_ramps = ramps
 
-            dimmed = [
-                (name, build_dimmed_gamma_ramp_values(values, percent))
-                for name, values in self._original_ramps
-            ]
-            changed, errors = write_windows_gamma_ramps(dimmed)
+            dimmed = build_dimmed_display_gamma_ramps(self._original_ramps, percent)
+            changed, errors = write_display_gamma_ramps(dimmed)
             if changed:
                 message = f"Software dimming set to {percent}% on {changed} display(s)."
                 if errors:
@@ -1119,7 +1289,7 @@ class SoftwareGammaDimmer:
         if not self._original_ramps:
             return StepResult("Software dimming", True, "Software dimming is already restored.")
 
-        changed, errors = write_windows_gamma_ramps(self._original_ramps)
+        changed, errors = write_display_gamma_ramps(self._original_ramps)
         expected = len(self._original_ramps)
         if changed == expected:
             self._original_ramps = []
@@ -1832,6 +2002,7 @@ def self_test() -> int:
     assert normalize_software_dimming_percent("2") == MIN_SOFTWARE_DIMMING_PERCENT
     assert normalize_software_dimming_percent("bad") == MAX_SOFTWARE_DIMMING_PERCENT
     assert build_dimmed_gamma_ramp_values([0, 1000, 65535], 25) == [0, 250, 16384]
+    assert build_dimmed_gamma_table_values([0.0, 0.5, 1.0], 25) == [0.0, 0.125, 0.25]
     assert parse_flux_run_value(r'"C:\Users\me\AppData\Local\FluxSoftware\Flux\flux.exe" /noshow')
     assert "reopen_chrome_after_flag" in load_config()
     assert "restore_chrome_pages" in load_config()

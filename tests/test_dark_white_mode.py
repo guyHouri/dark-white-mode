@@ -242,6 +242,11 @@ class MiscTests(unittest.TestCase):
 
         self.assertEqual(app.build_dimmed_gamma_ramp_values(values, 25), [0, 250, 16384])
 
+    def test_build_dimmed_gamma_table_values(self):
+        values = [0.0, 0.5, 1.0]
+
+        self.assertEqual(app.build_dimmed_gamma_table_values(values, 25), [0.0, 0.125, 0.25])
+
     def test_flux_run_value_parses_quoted_path(self):
         parsed = app.parse_flux_run_value(r'"C:\Users\me\AppData\Local\FluxSoftware\Flux\flux.exe" /noshow')
 
