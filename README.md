@@ -1,20 +1,26 @@
 # dark-white-mode
 
-`dark-white-mode` is a small desktop utility that toggles a computer between a dark/low-light profile and a white/daylight profile.
+`dark-white-mode` is a small desktop utility that switches a computer between Night, Outside, and Work Indoors profiles.
 
 Credits: Guy Houri
 
 ## What the button changes
 
 - Windows/macOS system dark and light appearance.
-- The app window's own dark/white theme, either with the main toggle or with the separate App Theme button.
+- The app window's own dark/white theme, either with the mode profile or with the separate App Theme button.
 - Windows/macOS startup registration, so the app can launch automatically after restart and start minimized to the tray/menu bar.
 - A Windows Start Menu shortcut, so Windows Search can find the app with the same icon used by the executable.
 - Chrome's `chrome://flags` force-dark experiment by editing Chrome's per-user `Local State` file.
 - Display brightness through Windows WMI and DDC/CI monitor control where supported.
 - Experimental PWM-safe software dimming on Windows and macOS through display gamma/LUT tables, so the dark profile can dim pixels without lowering monitor hardware brightness.
 - f.lux color temperature by updating the current user's f.lux registry values and restarting `flux.exe`.
-- A Windows notification-area tray icon with Show, Toggle mode, and Quit actions.
+- A Windows notification-area tray icon with Show, profile choices, Next mode, and Quit actions.
+
+## Profiles
+
+- Night: dark appearance, Chrome force-dark enabled, 0% brightness, and 1200K f.lux.
+- Outside: light appearance, Chrome force-dark disabled, 100% brightness, and 6500K f.lux.
+- Work Indoors: dark appearance, Chrome force-dark enabled, 50% brightness, and 2700K f.lux.
 
 ## Notes
 

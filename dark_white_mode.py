@@ -65,12 +65,60 @@ def config_path() -> Path:
     return app_data_dir() / "settings.json"
 
 
+PROFILE_ORDER = ("night", "outside", "work_indoors")
+DEFAULT_PROFILE = "outside"
+PROFILE_DEFINITIONS = {
+    "night": {
+        "label": "Night",
+        "theme": "dark",
+        "brightness_key": "night_brightness",
+        "software_dimming_key": "night_software_dimming",
+        "flux_key": "night_flux_kelvin",
+        "default_brightness": 0,
+        "default_software_dimming": 25,
+        "default_flux_kelvin": 1200,
+    },
+    "outside": {
+        "label": "Outside",
+        "theme": "white",
+        "brightness_key": "outside_brightness",
+        "software_dimming_key": "outside_software_dimming",
+        "flux_key": "outside_flux_kelvin",
+        "default_brightness": 100,
+        "default_software_dimming": 100,
+        "default_flux_kelvin": 6500,
+    },
+    "work_indoors": {
+        "label": "Work Indoors",
+        "theme": "dark",
+        "brightness_key": "indoor_brightness",
+        "software_dimming_key": "indoor_software_dimming",
+        "flux_key": "indoor_flux_kelvin",
+        "default_brightness": 50,
+        "default_software_dimming": 50,
+        "default_flux_kelvin": 2700,
+    },
+}
+PROFILE_ALIASES = {
+    "dark": "night",
+    "night": "night",
+    "white": "outside",
+    "light": "outside",
+    "outside": "outside",
+    "work": "work_indoors",
+    "indoor": "work_indoors",
+    "indoors": "work_indoors",
+    "work_indoors": "work_indoors",
+}
+
+
 DEFAULT_CONFIG = {
-    "config_version": 6,
+    "config_version": 7,
     "start_with_windows": True,
     "start_minimized_to_tray": True,
     "app_window_theme": True,
     "app_theme": "white",
+    "current_profile": DEFAULT_PROFILE,
     "windows_theme": True,
     "chrome_force_dark": True,
     "brightness": True,
@@ -79,13 +127,15 @@ DEFAULT_CONFIG = {
     "prompt_before_closing_chrome": False,
     "reopen_chrome_after_flag": True,
     "restore_chrome_pages": True,
-    "dark_brightness": 1,
-    "white_brightness": 70,
-    "dark_software_dimming": 25,
-    "white_software_dimming": 100,
-    "dark_flux_kelvin": 1200,
-    "white_flux_kelvin": 6500,
-    "last_mode": "white",
+    "night_brightness": 0,
+    "outside_brightness": 100,
+    "indoor_brightness": 50,
+    "night_software_dimming": 25,
+    "outside_software_dimming": 100,
+    "indoor_software_dimming": 50,
+    "night_flux_kelvin": 1200,
+    "outside_flux_kelvin": 6500,
+    "indoor_flux_kelvin": 2700,
 }
 
 
@@ -129,6 +179,49 @@ def opposite_app_theme(value) -> str:
     return "white" if normalize_app_theme(value) == "dark" else "dark"
 
 
+def normalize_profile_id(value) -> str:
+    return PROFILE_ALIASES.get(str(value).strip().lower().replace("-", "_").replace(" ", "_"), DEFAULT_PROFILE)
+
+
+def profile_label(profile_id: str) -> str:
+    return PROFILE_DEFINITIONS[normalize_profile_id(profile_id)]["label"]
+
+
+def profile_theme(profile_id: str) -> str:
+    return PROFILE_DEFINITIONS[normalize_profile_id(profile_id)]["theme"]
+
+
+def profile_is_dark(profile_id: str) -> bool:
+    return profile_theme(profile_id) == "dark"
+
+
+def next_profile_id(profile_id: str) -> str:
+    normalized = normalize_profile_id(profile_id)
+    index = PROFILE_ORDER.index(normalized)
+    return PROFILE_ORDER[(index + 1) % len(PROFILE_ORDER)]
+
+
+def profile_brightness(profile_id: str, settings: dict) -> int:
+    profile = PROFILE_DEFINITIONS[normalize_profile_id(profile_id)]
+    return clamp_int(settings.get(profile["brightness_key"]), 0, 100, int(profile["default_brightness"]))
+
+
+def profile_software_dimming(profile_id: str, settings: dict) -> int:
+    profile = PROFILE_DEFINITIONS[normalize_profile_id(profile_id)]
+    return normalize_software_dimming_percent(
+        settings.get(profile["software_dimming_key"], profile["default_software_dimming"])
+    )
+
+
+def profile_flux_kelvin(profile_id: str, settings: dict) -> int:
+    profile = PROFILE_DEFINITIONS[normalize_profile_id(profile_id)]
+    return clamp_int(settings.get(profile["flux_key"]), 800, 10000, int(profile["default_flux_kelvin"]))
+
+
+def profile_from_legacy_mode(value) -> str:
+    return "night" if str(value).lower() == "dark" else DEFAULT_PROFILE
+
+
 def mode_display_name(dark: bool) -> str:
     return "Dark" if dark else "White"
 
@@ -141,26 +234,70 @@ def mode_change_button_text(target_dark: bool) -> str:
     return f"Changing to {mode_display_name(target_dark)} Mode..."
 
 
+def profile_change_status_text(profile_id: str) -> str:
+    return f"Changing to {profile_label(profile_id)} mode. Please wait..."
+
+
+def profile_change_button_text(profile_id: str) -> str:
+    return f"Changing to {profile_label(profile_id)}..."
+
+
 def merge_config_data(data: dict) -> dict:
     merged = dict(DEFAULT_CONFIG)
     merged.update({k: v for k, v in data.items() if k in DEFAULT_CONFIG})
-    if int(data.get("config_version", 1)) < 2:
+    config_version = int(data.get("config_version", 1))
+    if config_version < 2:
         merged["prompt_before_closing_chrome"] = False
         merged["reopen_chrome_after_flag"] = True
         merged["restore_chrome_pages"] = True
-    if int(data.get("config_version", 1)) < 3:
+    if config_version < 3:
         merged["restore_chrome_pages"] = True
-    if int(data.get("config_version", 1)) < 4:
+    if config_version < 4:
         merged["app_window_theme"] = True
         merged["app_theme"] = normalize_app_theme(data.get("last_mode", DEFAULT_CONFIG["app_theme"]))
-    if int(data.get("config_version", 1)) < 5:
+    if config_version < 5:
         merged["start_with_windows"] = True
         merged["start_minimized_to_tray"] = True
-    if int(data.get("config_version", 1)) < 6:
+    if config_version < 6:
         merged["software_dimming"] = False
-        merged["dark_software_dimming"] = DEFAULT_CONFIG["dark_software_dimming"]
-        merged["white_software_dimming"] = DEFAULT_CONFIG["white_software_dimming"]
+    if "current_profile" not in data:
+        merged["current_profile"] = profile_from_legacy_mode(data.get("last_mode", data.get("app_theme", "white")))
+        if bool(merged.get("app_window_theme", True)):
+            merged["app_theme"] = profile_theme(merged["current_profile"])
+    if "night_brightness" not in data and "dark_brightness" in data:
+        merged["night_brightness"] = clamp_int(data.get("dark_brightness"), 0, 100, DEFAULT_CONFIG["night_brightness"])
+    if "outside_brightness" not in data and "white_brightness" in data:
+        merged["outside_brightness"] = clamp_int(
+            data.get("white_brightness"),
+            0,
+            100,
+            DEFAULT_CONFIG["outside_brightness"],
+        )
+    if "night_flux_kelvin" not in data and "dark_flux_kelvin" in data:
+        merged["night_flux_kelvin"] = clamp_int(
+            data.get("dark_flux_kelvin"),
+            800,
+            10000,
+            DEFAULT_CONFIG["night_flux_kelvin"],
+        )
+    if "outside_flux_kelvin" not in data and "white_flux_kelvin" in data:
+        merged["outside_flux_kelvin"] = clamp_int(
+            data.get("white_flux_kelvin"),
+            800,
+            10000,
+            DEFAULT_CONFIG["outside_flux_kelvin"],
+        )
+    if "night_software_dimming" not in data and "dark_software_dimming" in data:
+        merged["night_software_dimming"] = normalize_software_dimming_percent(data.get("dark_software_dimming"))
+    if "outside_software_dimming" not in data and "white_software_dimming" in data:
+        merged["outside_software_dimming"] = normalize_software_dimming_percent(data.get("white_software_dimming"))
+    for profile in PROFILE_DEFINITIONS.values():
+        dimming_key = profile["software_dimming_key"]
+        merged[dimming_key] = normalize_software_dimming_percent(
+            merged.get(dimming_key, profile["default_software_dimming"])
+        )
     merged["app_theme"] = normalize_app_theme(merged.get("app_theme"))
+    merged["current_profile"] = normalize_profile_id(merged.get("current_profile"))
     merged["config_version"] = DEFAULT_CONFIG["config_version"]
     return merged
 
@@ -1435,14 +1572,15 @@ class DarkWhiteModeApp(tk.Tk):
         self.app_icon_photo = None
         self.apply_window_icon()
         self.title(APP_NAME)
-        self.geometry("540x900")
-        self.minsize(520, 800)
+        self.geometry("560x980")
+        self.minsize(540, 860)
         self.config_data = load_config()
         self.start_hidden = start_hidden
-        self.current_mode = read_system_mode()
+        self.current_profile = normalize_profile_id(self.config_data.get("current_profile"))
         self.vars = {}
+        self.profile_buttons = {}
         self.running = False
-        self.busy_target_dark = None
+        self.busy_target_profile = None
         self.quitting = False
         self.tray_icon = None
         self.tray_started = False
@@ -1471,6 +1609,8 @@ class DarkWhiteModeApp(tk.Tk):
         self.style.configure("Mode.TLabel", font=("Segoe UI", 11))
         self.style.configure("Busy.TLabel", font=("Segoe UI", 10, "bold"))
         self.style.configure("Big.TButton", font=("Segoe UI", 14, "bold"), padding=(18, 14))
+        self.style.configure("Profile.TButton", font=("Segoe UI", 10, "bold"), padding=(10, 10))
+        self.style.configure("ActiveProfile.TButton", font=("Segoe UI", 10, "bold"), padding=(10, 10))
 
         root = ttk.Frame(self, padding=18)
         root.grid(row=0, column=0, sticky="nsew")
@@ -1483,8 +1623,18 @@ class DarkWhiteModeApp(tk.Tk):
         self.app_theme_button = ttk.Button(root, text="", command=self.toggle_app_theme)
         self.app_theme_button.grid(row=2, column=0, sticky="ew", pady=(0, 10))
 
-        self.toggle_button = ttk.Button(root, text="", style="Big.TButton", command=self.toggle)
-        self.toggle_button.grid(row=3, column=0, sticky="ew", pady=(0, 16))
+        profile_frame = ttk.Frame(root)
+        profile_frame.grid(row=3, column=0, sticky="ew", pady=(0, 16))
+        for column, profile_id in enumerate(PROFILE_ORDER):
+            profile_frame.columnconfigure(column, weight=1)
+            button = ttk.Button(
+                profile_frame,
+                text=profile_label(profile_id),
+                style="Profile.TButton",
+                command=lambda selected=profile_id: self.apply_profile(selected),
+            )
+            button.grid(row=0, column=column, sticky="ew", padx=(0 if column == 0 else 4, 0 if column == len(PROFILE_ORDER) - 1 else 4))
+            self.profile_buttons[profile_id] = button
 
         self.busy_frame = ttk.Frame(root)
         self.busy_frame.grid(row=4, column=0, sticky="ew", pady=(0, 12))
@@ -1520,12 +1670,24 @@ class DarkWhiteModeApp(tk.Tk):
         values.grid(row=6, column=0, sticky="ew", pady=(0, 12))
         values.columnconfigure(1, weight=1)
 
-        self._add_spinbox(values, 0, "Dark brightness", "dark_brightness", 0, 100, "%")
-        self._add_spinbox(values, 1, "White brightness", "white_brightness", 0, 100, "%")
-        self._add_spinbox(values, 2, "Dark software dimming", "dark_software_dimming", 5, 100, "%")
-        self._add_spinbox(values, 3, "White software dimming", "white_software_dimming", 5, 100, "%")
-        self._add_spinbox(values, 4, "Dark f.lux", "dark_flux_kelvin", 800, 10000, "K")
-        self._add_spinbox(values, 5, "White f.lux", "white_flux_kelvin", 800, 10000, "K")
+        row = 0
+        for profile_id in PROFILE_ORDER:
+            profile = PROFILE_DEFINITIONS[profile_id]
+            label = profile["label"]
+            self._add_spinbox(values, row, f"{label} brightness", profile["brightness_key"], 0, 100, "%")
+            row += 1
+            self._add_spinbox(
+                values,
+                row,
+                f"{label} software dimming",
+                profile["software_dimming_key"],
+                5,
+                100,
+                "%",
+            )
+            row += 1
+            self._add_spinbox(values, row, f"{label} f.lux", profile["flux_key"], 800, 10000, "K")
+            row += 1
 
         chrome_var = tk.BooleanVar(value=bool(self.config_data["prompt_before_closing_chrome"]))
         self.vars["prompt_before_closing_chrome"] = chrome_var
@@ -1578,7 +1740,7 @@ class DarkWhiteModeApp(tk.Tk):
 
         self.status_text = tk.Text(
             status_frame,
-            height=10,
+            height=8,
             wrap="word",
             state="disabled",
             borderwidth=0,
@@ -1653,6 +1815,30 @@ class DarkWhiteModeApp(tk.Tk):
                 foreground=[("disabled", colors["muted"]), ("active", colors["button_fg"])],
             )
             self.style.configure(
+                "Profile.TButton",
+                background=colors["surface"],
+                foreground=colors["text"],
+                bordercolor=colors["border"],
+                focuscolor=colors["border"],
+            )
+            self.style.map(
+                "Profile.TButton",
+                background=[("active", colors["select_bg"]), ("disabled", colors["surface"])],
+                foreground=[("disabled", colors["muted"]), ("active", colors["text"])],
+            )
+            self.style.configure(
+                "ActiveProfile.TButton",
+                background=colors["accent"],
+                foreground=colors["button_fg"],
+                bordercolor=colors["accent"],
+                focuscolor=colors["accent"],
+            )
+            self.style.map(
+                "ActiveProfile.TButton",
+                background=[("active", colors["accent_hover"]), ("disabled", colors["surface"])],
+                foreground=[("disabled", colors["muted"]), ("active", colors["button_fg"])],
+            )
+            self.style.configure(
                 "TSpinbox",
                 fieldbackground=colors["field"],
                 background=colors["surface"],
@@ -1704,7 +1890,25 @@ class DarkWhiteModeApp(tk.Tk):
 
         menu = pystray.Menu(
             pystray.MenuItem("Show", self._tray_show, default=True),
-            pystray.MenuItem("Toggle mode", self._tray_toggle, enabled=lambda _item: not self.running),
+            pystray.MenuItem(
+                "Night mode",
+                self._tray_apply_profile("night"),
+                checked=lambda _item: self.current_profile == "night",
+                enabled=lambda _item: not self.running,
+            ),
+            pystray.MenuItem(
+                "Outside mode",
+                self._tray_apply_profile("outside"),
+                checked=lambda _item: self.current_profile == "outside",
+                enabled=lambda _item: not self.running,
+            ),
+            pystray.MenuItem(
+                "Work Indoors",
+                self._tray_apply_profile("work_indoors"),
+                checked=lambda _item: self.current_profile == "work_indoors",
+                enabled=lambda _item: not self.running,
+            ),
+            pystray.MenuItem("Next mode", self._tray_toggle, enabled=lambda _item: not self.running),
             pystray.MenuItem("Quit", self._tray_quit),
         )
         self.tray_icon = pystray.Icon(APP_NAME, image, f"{APP_NAME} - Guy Houri", menu)
@@ -1718,6 +1922,12 @@ class DarkWhiteModeApp(tk.Tk):
 
     def _tray_toggle(self, _icon=None, _item=None):
         self.ui_queue.put(self.toggle)
+
+    def _tray_apply_profile(self, profile_id: str):
+        def callback(_icon=None, _item=None):
+            self.ui_queue.put(lambda: self.apply_profile(profile_id))
+
+        return callback
 
     def _tray_quit(self, _icon=None, _item=None):
         self.ui_queue.put(self.quit_app)
@@ -1827,26 +2037,35 @@ class DarkWhiteModeApp(tk.Tk):
         ttk.Label(parent, text=suffix).grid(row=row, column=2, sticky="w", pady=4)
 
     def _refresh_button(self):
-        if self.running and self.busy_target_dark is not None:
-            self.mode_label.configure(text=mode_change_status_text(self.busy_target_dark))
-            self.toggle_button.configure(text=mode_change_button_text(self.busy_target_dark))
+        if self.running and self.busy_target_profile is not None:
+            self.mode_label.configure(text=profile_change_status_text(self.busy_target_profile))
+            for profile_id, button in self.profile_buttons.items():
+                button.configure(
+                    text=profile_change_button_text(profile_id) if profile_id == self.busy_target_profile else profile_label(profile_id),
+                    state="disabled",
+                    style="ActiveProfile.TButton" if profile_id == self.busy_target_profile else "Profile.TButton",
+                )
             return
-        mode_name = "Dark" if self.current_mode == "dark" else "White"
-        target = "White" if self.current_mode == "dark" else "Dark"
-        self.mode_label.configure(text=f"Current mode: {mode_name}")
-        self.toggle_button.configure(text=f"Switch to {target} Mode")
+        self.mode_label.configure(text=f"Current mode: {profile_label(self.current_profile)}")
+        for profile_id, button in self.profile_buttons.items():
+            button.configure(
+                text=profile_label(profile_id),
+                state="normal",
+                style="ActiveProfile.TButton" if profile_id == self.current_profile else "Profile.TButton",
+            )
         if hasattr(self, "app_theme_button"):
             app_theme = normalize_app_theme(self.config_data.get("app_theme"))
             next_theme = opposite_app_theme(app_theme).title()
             self.app_theme_button.configure(text=f"App Theme: {app_theme.title()}  |  Switch to {next_theme}")
 
-    def _set_busy_state(self, active: bool, target_dark: bool | None = None):
+    def _set_busy_state(self, active: bool, target_profile: str | None = None):
         self.running = active
-        self.busy_target_dark = target_dark if active else None
+        self.busy_target_profile = normalize_profile_id(target_profile) if active and target_profile else None
         if active:
-            self.toggle_button.configure(state="disabled")
+            for button in self.profile_buttons.values():
+                button.configure(state="disabled")
             self.app_theme_button.configure(state="disabled")
-            self.busy_label.configure(text=mode_change_status_text(bool(target_dark)))
+            self.busy_label.configure(text=profile_change_status_text(self.busy_target_profile or self.current_profile))
             self.busy_frame.grid()
             self.busy_progress.start(12)
             self.configure(cursor="watch")
@@ -1857,7 +2076,8 @@ class DarkWhiteModeApp(tk.Tk):
         self.busy_progress.stop()
         self.busy_frame.grid_remove()
         self.configure(cursor="")
-        self.toggle_button.configure(state="normal")
+        for button in self.profile_buttons.values():
+            button.configure(state="normal")
         self.app_theme_button.configure(state="normal")
         self._refresh_button()
 
@@ -1883,22 +2103,36 @@ class DarkWhiteModeApp(tk.Tk):
             "restore_chrome_pages",
         ):
             settings[key] = bool(self.vars[key].get())
-        settings["dark_brightness"] = clamp_int(self.vars["dark_brightness"].get(), 0, 100, 1)
-        settings["white_brightness"] = clamp_int(self.vars["white_brightness"].get(), 0, 100, 70)
-        settings["dark_software_dimming"] = normalize_software_dimming_percent(self.vars["dark_software_dimming"].get())
-        settings["white_software_dimming"] = normalize_software_dimming_percent(self.vars["white_software_dimming"].get())
-        settings["dark_flux_kelvin"] = clamp_int(self.vars["dark_flux_kelvin"].get(), 800, 10000, 1200)
-        settings["white_flux_kelvin"] = clamp_int(self.vars["white_flux_kelvin"].get(), 800, 10000, 6500)
+        for profile_id, profile in PROFILE_DEFINITIONS.items():
+            settings[profile["brightness_key"]] = clamp_int(
+                self.vars[profile["brightness_key"]].get(),
+                0,
+                100,
+                int(profile["default_brightness"]),
+            )
+            settings[profile["software_dimming_key"]] = normalize_software_dimming_percent(
+                self.vars[profile["software_dimming_key"]].get()
+            )
+            settings[profile["flux_key"]] = clamp_int(
+                self.vars[profile["flux_key"]].get(),
+                800,
+                10000,
+                int(profile["default_flux_kelvin"]),
+            )
         return settings
 
     def toggle(self):
+        self.apply_profile(next_profile_id(self.current_profile))
+
+    def apply_profile(self, profile_id: str):
         if self.running:
             return
-        target_dark = self.current_mode != "dark"
+        target_profile = normalize_profile_id(profile_id)
+        target_dark = profile_is_dark(target_profile)
         settings = self.collect_settings()
-        settings["last_mode"] = "dark" if target_dark else "white"
+        settings["current_profile"] = target_profile
         if settings["app_window_theme"]:
-            settings["app_theme"] = "dark" if target_dark else "white"
+            settings["app_theme"] = profile_theme(target_profile)
         self.config_data = settings
         save_config(settings)
         if settings["app_window_theme"]:
@@ -1925,14 +2159,16 @@ class DarkWhiteModeApp(tk.Tk):
                 settings["_reopen_chrome_after_flag"] = settings["reopen_chrome_after_flag"]
                 settings["_restore_chrome_pages"] = settings["restore_chrome_pages"]
 
-        self._set_busy_state(True, target_dark)
+        self._set_busy_state(True, target_profile)
         self.log("")
-        self.log(mode_change_status_text(target_dark))
-        thread = threading.Thread(target=self._apply_in_thread, args=(target_dark, settings), daemon=True)
+        self.log(profile_change_status_text(target_profile))
+        thread = threading.Thread(target=self._apply_in_thread, args=(target_profile, settings), daemon=True)
         thread.start()
         self.after(100, self._check_result_queue)
 
-    def _apply_in_thread(self, target_dark: bool, settings: dict):
+    def _apply_in_thread(self, target_profile: str, settings: dict):
+        target_profile = normalize_profile_id(target_profile)
+        target_dark = profile_is_dark(target_profile)
         results = []
         if software_gamma_dimmer.is_active():
             results.append(restore_software_dimming())
@@ -1947,7 +2183,7 @@ class DarkWhiteModeApp(tk.Tk):
                 )
             )
         elif settings["brightness"]:
-            level = settings["dark_brightness"] if target_dark else settings["white_brightness"]
+            level = profile_brightness(target_profile, settings)
             results.append(set_brightness(level))
         if settings["chrome_force_dark"]:
             chrome_can_update = True
@@ -1966,23 +2202,23 @@ class DarkWhiteModeApp(tk.Tk):
                     )
                 )
         if settings["flux"]:
-            kelvin = settings["dark_flux_kelvin"] if target_dark else settings["white_flux_kelvin"]
+            kelvin = profile_flux_kelvin(target_profile, settings)
             results.append(set_flux_kelvin(kelvin))
         if settings.get("software_dimming"):
-            percent = settings["dark_software_dimming"] if target_dark else settings["white_software_dimming"]
+            percent = profile_software_dimming(target_profile, settings)
             results.append(set_software_dimming(percent))
-        self.result_queue.put((target_dark, results))
+        self.result_queue.put((target_profile, results))
 
     def _check_result_queue(self):
         try:
-            target_dark, results = self.result_queue.get_nowait()
+            target_profile, results = self.result_queue.get_nowait()
         except queue.Empty:
             if self.running:
                 self.after(100, self._check_result_queue)
             return
-        self._finish_apply(target_dark, results)
+        self._finish_apply(target_profile, results)
 
-    def _finish_apply(self, target_dark: bool, results: list[StepResult]):
+    def _finish_apply(self, target_profile: str, results: list[StepResult]):
         for result in results:
             prefix = "OK" if result.ok else "WARN"
             self.log(f"{prefix} - {result.name}: {result.message}")
@@ -1990,7 +2226,7 @@ class DarkWhiteModeApp(tk.Tk):
             self.log("Done.")
         else:
             self.log("Done with warnings.")
-        self.current_mode = "dark" if target_dark else "white"
+        self.current_profile = normalize_profile_id(target_profile)
         self._set_busy_state(False)
         if self.tray_icon is not None:
             try:
@@ -2020,6 +2256,12 @@ def self_test() -> int:
     assert opposite_app_theme("white") == "dark"
     assert mode_change_status_text(True) == "Changing to Dark mode. Please wait..."
     assert mode_change_button_text(False) == "Changing to White Mode..."
+    assert profile_change_status_text("work_indoors") == "Changing to Work Indoors mode. Please wait..."
+    assert profile_is_dark("work_indoors")
+    assert profile_brightness("night", DEFAULT_CONFIG) == 0
+    assert profile_brightness("outside", DEFAULT_CONFIG) == 100
+    assert profile_flux_kelvin("work_indoors", DEFAULT_CONFIG) == 2700
+    assert merge_config_data({"config_version": 5, "last_mode": "dark"})["current_profile"] == "night"
     assert "app_window_theme" in load_config()
     assert "start_with_windows" in load_config()
     assert build_startup_command([r"C:\Program Files\App\dark-white-mode.exe"], True).endswith('" --startup')

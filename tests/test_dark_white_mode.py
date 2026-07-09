@@ -92,16 +92,65 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(migrated["restore_chrome_pages"])
         self.assertTrue(migrated["app_window_theme"])
         self.assertEqual(migrated["app_theme"], "white")
+        self.assertEqual(migrated["current_profile"], "outside")
         self.assertTrue(migrated["start_with_windows"])
         self.assertTrue(migrated["start_minimized_to_tray"])
         self.assertFalse(migrated["software_dimming"])
-        self.assertEqual(migrated["dark_software_dimming"], app.DEFAULT_CONFIG["dark_software_dimming"])
-        self.assertEqual(migrated["white_software_dimming"], app.DEFAULT_CONFIG["white_software_dimming"])
+        self.assertEqual(migrated["night_software_dimming"], app.DEFAULT_CONFIG["night_software_dimming"])
+        self.assertEqual(migrated["outside_software_dimming"], app.DEFAULT_CONFIG["outside_software_dimming"])
+        self.assertEqual(migrated["indoor_software_dimming"], app.DEFAULT_CONFIG["indoor_software_dimming"])
+
+    def test_v6_dimming_config_migrates_to_profile_values(self):
+        migrated = app.merge_config_data(
+            {
+                "config_version": 6,
+                "last_mode": "dark",
+                "dark_brightness": 3,
+                "white_brightness": 88,
+                "dark_software_dimming": 20,
+                "white_software_dimming": 95,
+                "dark_flux_kelvin": 1100,
+                "white_flux_kelvin": 6200,
+            }
+        )
+
+        self.assertEqual(migrated["current_profile"], "night")
+        self.assertEqual(migrated["night_brightness"], 3)
+        self.assertEqual(migrated["outside_brightness"], 88)
+        self.assertEqual(migrated["night_software_dimming"], 20)
+        self.assertEqual(migrated["outside_software_dimming"], 95)
+        self.assertEqual(migrated["night_flux_kelvin"], 1100)
+        self.assertEqual(migrated["outside_flux_kelvin"], 6200)
+
+    def test_old_dark_config_migrates_to_night_profile(self):
+        migrated = app.merge_config_data({"config_version": 5, "last_mode": "dark"})
+
+        self.assertEqual(migrated["current_profile"], "night")
+        self.assertEqual(migrated["app_theme"], "dark")
+
+    def test_migration_preserves_manual_app_theme_when_profile_theming_is_disabled(self):
+        migrated = app.merge_config_data(
+            {
+                "config_version": 5,
+                "last_mode": "dark",
+                "app_window_theme": False,
+                "app_theme": "white",
+            }
+        )
+
+        self.assertEqual(migrated["current_profile"], "night")
+        self.assertFalse(migrated["app_window_theme"])
+        self.assertEqual(migrated["app_theme"], "white")
 
     def test_app_theme_is_normalized(self):
         migrated = app.merge_config_data({"config_version": app.DEFAULT_CONFIG["config_version"], "app_theme": "purple"})
 
         self.assertEqual(migrated["app_theme"], "white")
+
+    def test_profile_id_is_normalized(self):
+        migrated = app.merge_config_data({"config_version": app.DEFAULT_CONFIG["config_version"], "current_profile": "indoors"})
+
+        self.assertEqual(migrated["current_profile"], "work_indoors")
 
     def test_opposite_app_theme(self):
         self.assertEqual(app.opposite_app_theme("white"), "dark")
@@ -114,13 +163,15 @@ class ApplyWorkflowTests(unittest.TestCase):
         settings = {
             "windows_theme": False,
             "brightness": False,
+            "software_dimming": False,
             "chrome_force_dark": True,
             "flux": True,
             "_close_chrome_for_flag": True,
             "_reopen_chrome_after_flag": True,
             "_restore_chrome_pages": True,
-            "dark_flux_kelvin": 1200,
-            "white_flux_kelvin": 6500,
+            "night_flux_kelvin": 1200,
+            "outside_flux_kelvin": 6500,
+            "indoor_flux_kelvin": 2700,
         }
 
         with (
@@ -136,10 +187,10 @@ class ApplyWorkflowTests(unittest.TestCase):
                 return_value=app.StepResult("f.lux", True, "f.lux updated."),
             ) as set_flux_kelvin,
         ):
-            app.DarkWhiteModeApp._apply_in_thread(runner, True, settings)
+            app.DarkWhiteModeApp._apply_in_thread(runner, "night", settings)
 
-        target_dark, results = runner.result_queue.get_nowait()
-        self.assertTrue(target_dark)
+        target_profile, results = runner.result_queue.get_nowait()
+        self.assertEqual(target_profile, "night")
         set_chrome_force_dark.assert_not_called()
         set_flux_kelvin.assert_called_once_with(1200)
         self.assertEqual([result.name for result in results], ["Chrome", "Chrome", "f.lux"])
@@ -152,10 +203,12 @@ class ApplyWorkflowTests(unittest.TestCase):
             "software_dimming": True,
             "chrome_force_dark": False,
             "flux": True,
-            "dark_software_dimming": 20,
-            "white_software_dimming": 100,
-            "dark_flux_kelvin": 1200,
-            "white_flux_kelvin": 6500,
+            "night_software_dimming": 20,
+            "outside_software_dimming": 100,
+            "indoor_software_dimming": 50,
+            "night_flux_kelvin": 1200,
+            "outside_flux_kelvin": 6500,
+            "indoor_flux_kelvin": 2700,
         }
         calls = []
 
@@ -172,10 +225,10 @@ class ApplyWorkflowTests(unittest.TestCase):
             mock.patch.object(app, "set_flux_kelvin", side_effect=fake_flux),
             mock.patch.object(app, "set_software_dimming", side_effect=fake_dimming),
         ):
-            app.DarkWhiteModeApp._apply_in_thread(runner, True, settings)
+            app.DarkWhiteModeApp._apply_in_thread(runner, "night", settings)
 
-        target_dark, results = runner.result_queue.get_nowait()
-        self.assertTrue(target_dark)
+        target_profile, results = runner.result_queue.get_nowait()
+        self.assertEqual(target_profile, "night")
         self.assertEqual(calls, [("flux", 1200), ("software", 20)])
         self.assertEqual([result.name for result in results], ["f.lux", "Software dimming"])
 
@@ -187,10 +240,12 @@ class ApplyWorkflowTests(unittest.TestCase):
             "software_dimming": True,
             "chrome_force_dark": False,
             "flux": False,
-            "dark_brightness": 1,
-            "white_brightness": 70,
-            "dark_software_dimming": 20,
-            "white_software_dimming": 100,
+            "night_brightness": 1,
+            "outside_brightness": 70,
+            "indoor_brightness": 50,
+            "night_software_dimming": 20,
+            "outside_software_dimming": 100,
+            "indoor_software_dimming": 50,
         }
 
         with (
@@ -202,9 +257,9 @@ class ApplyWorkflowTests(unittest.TestCase):
                 return_value=app.StepResult("Software dimming", True, "Software dimming updated."),
             ),
         ):
-            app.DarkWhiteModeApp._apply_in_thread(runner, True, settings)
+            app.DarkWhiteModeApp._apply_in_thread(runner, "night", settings)
 
-        _target_dark, results = runner.result_queue.get_nowait()
+        _target_profile, results = runner.result_queue.get_nowait()
         set_brightness.assert_not_called()
         self.assertEqual([result.name for result in results], ["Brightness", "Software dimming"])
         self.assertIn("Hardware brightness skipped", results[0].message)
@@ -217,10 +272,12 @@ class ApplyWorkflowTests(unittest.TestCase):
             "software_dimming": True,
             "chrome_force_dark": False,
             "flux": True,
-            "dark_software_dimming": 20,
-            "white_software_dimming": 100,
-            "dark_flux_kelvin": 1200,
-            "white_flux_kelvin": 6500,
+            "night_software_dimming": 20,
+            "outside_software_dimming": 100,
+            "indoor_software_dimming": 50,
+            "night_flux_kelvin": 1200,
+            "outside_flux_kelvin": 6500,
+            "indoor_flux_kelvin": 2700,
         }
         calls = []
 
@@ -242,10 +299,10 @@ class ApplyWorkflowTests(unittest.TestCase):
             mock.patch.object(app, "set_flux_kelvin", side_effect=fake_flux),
             mock.patch.object(app, "set_software_dimming", side_effect=fake_dimming),
         ):
-            app.DarkWhiteModeApp._apply_in_thread(runner, False, settings)
+            app.DarkWhiteModeApp._apply_in_thread(runner, "outside", settings)
 
-        target_dark, results = runner.result_queue.get_nowait()
-        self.assertFalse(target_dark)
+        target_profile, results = runner.result_queue.get_nowait()
+        self.assertEqual(target_profile, "outside")
         self.assertEqual(calls, [("restore", None), ("flux", 6500), ("software", 100)])
         self.assertEqual([result.name for result in results], ["Software dimming", "f.lux", "Software dimming"])
 
@@ -256,6 +313,25 @@ class MiscTests(unittest.TestCase):
         self.assertEqual(app.mode_change_status_text(False), "Changing to White mode. Please wait...")
         self.assertEqual(app.mode_change_button_text(True), "Changing to Dark Mode...")
         self.assertEqual(app.mode_change_button_text(False), "Changing to White Mode...")
+        self.assertEqual(app.profile_change_status_text("work_indoors"), "Changing to Work Indoors mode. Please wait...")
+        self.assertEqual(app.profile_change_button_text("outside"), "Changing to Outside...")
+
+    def test_profile_defaults(self):
+        settings = dict(app.DEFAULT_CONFIG)
+
+        self.assertEqual(app.profile_brightness("night", settings), 0)
+        self.assertEqual(app.profile_flux_kelvin("night", settings), 1200)
+        self.assertEqual(app.profile_software_dimming("night", settings), 25)
+        self.assertEqual(app.profile_brightness("outside", settings), 100)
+        self.assertEqual(app.profile_flux_kelvin("outside", settings), 6500)
+        self.assertEqual(app.profile_software_dimming("outside", settings), 100)
+        self.assertEqual(app.profile_brightness("work_indoors", settings), 50)
+        self.assertEqual(app.profile_flux_kelvin("work_indoors", settings), 2700)
+        self.assertEqual(app.profile_software_dimming("work_indoors", settings), 50)
+        self.assertTrue(app.profile_is_dark("work_indoors"))
+        self.assertEqual(app.next_profile_id("night"), "outside")
+        self.assertEqual(app.next_profile_id("outside"), "work_indoors")
+        self.assertEqual(app.next_profile_id("work_indoors"), "night")
 
     def test_clamp_int(self):
         self.assertEqual(app.clamp_int("200", 0, 100, 1), 100)
