@@ -40,6 +40,12 @@ CREATE_NO_WINDOW = 0x08000000
 WM_SETTINGCHANGE = 0x001A
 HWND_BROADCAST = 0xFFFF
 SMTO_ABORTIFHUNG = 0x0002
+POWER_SCHEME_BALANCED = "SCHEME_BALANCED"
+POWER_SCHEME_SAVER = "SCHEME_MAX"
+PROCESSOR_SUBGROUP = "SUB_PROCESSOR"
+PROCESSOR_MAX_SETTING = "PROCTHROTTLEMAX"
+OUTSIDE_PROCESSOR_MAX = 99
+DEFAULT_PROCESSOR_MAX = 100
 
 
 @dataclass
@@ -113,13 +119,14 @@ PROFILE_ALIASES = {
 
 
 DEFAULT_CONFIG = {
-    "config_version": 7,
+    "config_version": 8,
     "start_with_windows": True,
     "start_minimized_to_tray": True,
     "app_window_theme": True,
     "app_theme": "white",
     "current_profile": DEFAULT_PROFILE,
     "windows_theme": True,
+    "battery_optimization": True,
     "chrome_force_dark": True,
     "brightness": True,
     "software_dimming": False,
@@ -579,6 +586,46 @@ def run_hidden(command, timeout=12):
         text=True,
         timeout=timeout,
         **kwargs,
+    )
+
+
+def run_powercfg(args: list[str], timeout: int = 12):
+    return run_hidden(["powercfg", *args], timeout=timeout)
+
+
+def set_windows_power_profile(scheme: str, processor_max: int, message: str) -> StepResult:
+    if not IS_WINDOWS:
+        return StepResult("Power", False, "Windows battery optimization is only available on Windows.")
+
+    processor_max = clamp_int(processor_max, 1, 100, DEFAULT_PROCESSOR_MAX)
+    commands = [
+        ["/setactive", scheme],
+        ["/setacvalueindex", "SCHEME_CURRENT", PROCESSOR_SUBGROUP, PROCESSOR_MAX_SETTING, str(processor_max)],
+        ["/setdcvalueindex", "SCHEME_CURRENT", PROCESSOR_SUBGROUP, PROCESSOR_MAX_SETTING, str(processor_max)],
+        ["/setactive", "SCHEME_CURRENT"],
+    ]
+    try:
+        for args in commands:
+            completed = run_powercfg(args)
+            if completed.returncode != 0:
+                details = (completed.stderr or completed.stdout or "").strip()
+                return StepResult("Power", False, f"Windows power update failed: powercfg {' '.join(args)}. {details}")
+        return StepResult("Power", True, message)
+    except Exception as exc:
+        return StepResult("Power", False, f"Windows power update failed: {exc}")
+
+
+def set_battery_optimization_for_profile(profile_id: str) -> StepResult:
+    if normalize_profile_id(profile_id) == "outside":
+        return set_windows_power_profile(
+            POWER_SCHEME_SAVER,
+            OUTSIDE_PROCESSOR_MAX,
+            "Outside battery optimization enabled: Power saver active, CPU max 99%.",
+        )
+    return set_windows_power_profile(
+        POWER_SCHEME_BALANCED,
+        DEFAULT_PROCESSOR_MAX,
+        "Battery optimization restored: Balanced active, CPU max 100%.",
     )
 
 
@@ -1656,6 +1703,7 @@ class DarkWhiteModeApp(tk.Tk):
             [
                 ("app_window_theme", "App window theme"),
                 ("windows_theme", "System theme"),
+                ("battery_optimization", "Outside battery optimization"),
                 ("chrome_force_dark", "Chrome force-dark flag"),
                 ("brightness", "Display brightness"),
                 ("software_dimming", "PWM-safe software dimming (experimental)"),
@@ -2094,6 +2142,7 @@ class DarkWhiteModeApp(tk.Tk):
             "start_minimized_to_tray",
             "app_window_theme",
             "windows_theme",
+            "battery_optimization",
             "chrome_force_dark",
             "brightness",
             "software_dimming",
@@ -2174,6 +2223,8 @@ class DarkWhiteModeApp(tk.Tk):
             results.append(restore_software_dimming())
         if settings["windows_theme"]:
             results.append(set_system_mode(target_dark))
+        if settings.get("battery_optimization"):
+            results.append(set_battery_optimization_for_profile(target_profile))
         if settings["brightness"] and settings.get("software_dimming"):
             results.append(
                 StepResult(
@@ -2250,6 +2301,7 @@ def self_test() -> int:
     assert parse_flux_run_value(r'"C:\Users\me\AppData\Local\FluxSoftware\Flux\flux.exe" /noshow')
     assert "reopen_chrome_after_flag" in load_config()
     assert "restore_chrome_pages" in load_config()
+    assert "battery_optimization" in load_config()
     assert "software_dimming" in load_config()
     assert normalize_app_theme("dark") == "dark"
     assert normalize_app_theme("bad") == "white"
@@ -2261,6 +2313,7 @@ def self_test() -> int:
     assert profile_brightness("night", DEFAULT_CONFIG) == 0
     assert profile_brightness("outside", DEFAULT_CONFIG) == 100
     assert profile_flux_kelvin("work_indoors", DEFAULT_CONFIG) == 2700
+    assert OUTSIDE_PROCESSOR_MAX == 99
     assert merge_config_data({"config_version": 5, "last_mode": "dark"})["current_profile"] == "night"
     assert "app_window_theme" in load_config()
     assert "start_with_windows" in load_config()

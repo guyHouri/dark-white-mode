@@ -10,6 +10,7 @@ Credits: Guy Houri
 - The app window's own dark/white theme, either with the mode profile or with the separate App Theme button.
 - Windows/macOS startup registration, so the app can launch automatically after restart and start minimized to the tray/menu bar.
 - A Windows Start Menu shortcut, so Windows Search can find the app with the same icon used by the executable.
+- Windows Outside battery optimization, using Power saver and a 99% CPU maximum processor state while Outside mode is active.
 - Chrome's `chrome://flags` force-dark experiment by editing Chrome's per-user `Local State` file.
 - Display brightness through Windows WMI and DDC/CI monitor control where supported.
 - Experimental PWM-safe software dimming on Windows and macOS through display gamma/LUT tables, so the dark profile can dim pixels without lowering monitor hardware brightness.
@@ -19,7 +20,7 @@ Credits: Guy Houri
 ## Profiles
 
 - Night: dark appearance, Chrome force-dark enabled, 0% brightness, and 1200K f.lux.
-- Outside: light appearance, Chrome force-dark disabled, 100% brightness, and 6500K f.lux.
+- Outside: light appearance, Chrome force-dark disabled, 100% brightness, 6500K f.lux, Windows Power saver, and 99% CPU maximum processor state.
 - Work Indoors: dark appearance, Chrome force-dark enabled, 50% brightness, and 2700K f.lux.
 
 ## Notes
@@ -28,6 +29,7 @@ Credits: Guy Houri
 - Closing or minimizing the window keeps the app running in the Windows system tray or hidden-icons overflow menu. Use the tray menu's Quit action to fully exit.
 - Startup is enabled by default. On Windows the app registers itself under the current user's startup apps. On macOS it writes a per-user LaunchAgent. Both launch with `--startup`, which starts minimized to the tray/menu bar.
 - Brightness control depends on the display. Windows uses WMI and DDC/CI where supported. macOS requires the optional Homebrew `brightness` tool.
+- Outside battery optimization is Windows-only. Switching to Night or Work Indoors restores the Balanced power scheme and a 100% CPU maximum processor state. Lenovo battery charge thresholds, Conservation Mode, and Rapid Charge still need to be managed in Lenovo Commercial Vantage.
 - PWM-safe software dimming is off by default. It stores the current gamma/LUT tables before dimming, restores them before each mode change, and restores them again when the app quits or the Python process exits. Because f.lux, HDR, Night light, True Tone, graphics drivers, and calibration tools can also own the gamma/LUT pipeline, the app reapplies software dimming after f.lux changes and may show a warning if the OS or driver rejects gamma changes.
 - f.lux does not provide a stable public command-line preset API. Windows uses the per-user f.lux preference registry values: `Outdoor`, `Indoor`, and `Late`. macOS f.lux Kelvin switching is not supported yet.
 - The app works per desktop user and normally does not need administrator rights.

@@ -1,6 +1,7 @@
 import json
 import plistlib
 import queue
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -95,6 +96,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(migrated["current_profile"], "outside")
         self.assertTrue(migrated["start_with_windows"])
         self.assertTrue(migrated["start_minimized_to_tray"])
+        self.assertTrue(migrated["battery_optimization"])
         self.assertFalse(migrated["software_dimming"])
         self.assertEqual(migrated["night_software_dimming"], app.DEFAULT_CONFIG["night_software_dimming"])
         self.assertEqual(migrated["outside_software_dimming"], app.DEFAULT_CONFIG["outside_software_dimming"])
@@ -194,6 +196,32 @@ class ApplyWorkflowTests(unittest.TestCase):
         set_chrome_force_dark.assert_not_called()
         set_flux_kelvin.assert_called_once_with(1200)
         self.assertEqual([result.name for result in results], ["Chrome", "Chrome", "f.lux"])
+
+    def test_outside_profile_runs_battery_optimization_when_enabled(self):
+        runner = type("Runner", (), {"result_queue": queue.Queue()})()
+        settings = {
+            "windows_theme": False,
+            "battery_optimization": True,
+            "brightness": False,
+            "software_dimming": False,
+            "chrome_force_dark": False,
+            "flux": False,
+        }
+
+        with (
+            mock.patch.object(app.software_gamma_dimmer, "is_active", return_value=False),
+            mock.patch.object(
+                app,
+                "set_battery_optimization_for_profile",
+                return_value=app.StepResult("Power", True, "Power updated."),
+            ) as set_battery_optimization,
+        ):
+            app.DarkWhiteModeApp._apply_in_thread(runner, "outside", settings)
+
+        target_profile, results = runner.result_queue.get_nowait()
+        self.assertEqual(target_profile, "outside")
+        set_battery_optimization.assert_called_once_with("outside")
+        self.assertEqual([result.name for result in results], ["Power"])
 
     def test_software_dimming_is_applied_after_flux(self):
         runner = type("Runner", (), {"result_queue": queue.Queue()})()
@@ -332,6 +360,46 @@ class MiscTests(unittest.TestCase):
         self.assertEqual(app.next_profile_id("night"), "outside")
         self.assertEqual(app.next_profile_id("outside"), "work_indoors")
         self.assertEqual(app.next_profile_id("work_indoors"), "night")
+
+    def test_outside_battery_optimization_sets_power_saver_and_cpu_99(self):
+        completed = subprocess.CompletedProcess([], 0, "", "")
+
+        with (
+            mock.patch.object(app, "IS_WINDOWS", True),
+            mock.patch.object(app, "run_powercfg", return_value=completed) as run_powercfg,
+        ):
+            result = app.set_battery_optimization_for_profile("outside")
+
+        self.assertTrue(result.ok)
+        self.assertEqual(
+            [call.args[0] for call in run_powercfg.call_args_list],
+            [
+                ["/setactive", app.POWER_SCHEME_SAVER],
+                ["/setacvalueindex", "SCHEME_CURRENT", app.PROCESSOR_SUBGROUP, app.PROCESSOR_MAX_SETTING, "99"],
+                ["/setdcvalueindex", "SCHEME_CURRENT", app.PROCESSOR_SUBGROUP, app.PROCESSOR_MAX_SETTING, "99"],
+                ["/setactive", "SCHEME_CURRENT"],
+            ],
+        )
+
+    def test_non_outside_battery_optimization_restores_balanced_and_cpu_100(self):
+        completed = subprocess.CompletedProcess([], 0, "", "")
+
+        with (
+            mock.patch.object(app, "IS_WINDOWS", True),
+            mock.patch.object(app, "run_powercfg", return_value=completed) as run_powercfg,
+        ):
+            result = app.set_battery_optimization_for_profile("work_indoors")
+
+        self.assertTrue(result.ok)
+        self.assertEqual(
+            [call.args[0] for call in run_powercfg.call_args_list],
+            [
+                ["/setactive", app.POWER_SCHEME_BALANCED],
+                ["/setacvalueindex", "SCHEME_CURRENT", app.PROCESSOR_SUBGROUP, app.PROCESSOR_MAX_SETTING, "100"],
+                ["/setdcvalueindex", "SCHEME_CURRENT", app.PROCESSOR_SUBGROUP, app.PROCESSOR_MAX_SETTING, "100"],
+                ["/setactive", "SCHEME_CURRENT"],
+            ],
+        )
 
     def test_clamp_int(self):
         self.assertEqual(app.clamp_int("200", 0, 100, 1), 100)
