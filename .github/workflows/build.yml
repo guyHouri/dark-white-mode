@@ -141,7 +141,15 @@ jobs:
           ditto -c -k --keepParent "$package_directory" dist/dark-white-mode-macos.zip
           cp install-macos.command dist/Install-dark-white-mode.command
           chmod +x dist/Install-dark-white-mode.command
-          ditto -c -k --sequesterRsrc --keepParent dist/Install-dark-white-mode.command dist/Install-dark-white-mode.zip
+          (
+            cd dist
+            ditto -c -k --sequesterRsrc --keepParent Install-dark-white-mode.command Install-dark-white-mode.zip
+          )
+          installer_check="$RUNNER_TEMP/dark-white-mode-installer-zip"
+          mkdir -p "$installer_check"
+          ditto -x -k dist/Install-dark-white-mode.zip "$installer_check"
+          test -x "$installer_check/Install-dark-white-mode.command"
+          bash "$installer_check/Install-dark-white-mode.command" --help >/dev/null
 
       - name: Write macOS checksum
         if: runner.os == 'macOS'
