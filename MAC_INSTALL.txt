@@ -1,0 +1,13 @@
+EASIEST MAC INSTALL
+
+1. Double-click Install-dark-white-mode.command.
+2. If macOS blocks it, right-click it, choose Open, and confirm Open.
+3. Choose Install f.lux when asked. The installer downloads f.lux only from
+   the official justgetflux.com site and validates its Apple signature.
+4. Complete any first-run prompts shown by f.lux.
+
+dark-white-mode and f.lux are installed for the current user under:
+    ~/Applications
+
+No Python, Homebrew, administrator password, or Apple Developer account is
+required. The dark-white-mode app is ad-hoc signed rather than notarized.
