@@ -2,9 +2,11 @@ import json
 import plistlib
 import queue
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import dark_white_mode as app
@@ -545,6 +547,41 @@ class MiscTests(unittest.TestCase):
         self.assertEqual(decoded["Label"], "com.guyhouri.dark-white-mode")
         self.assertTrue(decoded["RunAtLoad"])
         self.assertIn("--startup", decoded["ProgramArguments"])
+
+    def test_macos_tray_uses_detached_appkit_integration(self):
+        tray_icon = mock.Mock()
+        tray_icon.visible = True
+        fake_pystray = SimpleNamespace(
+            Menu=lambda *items: items,
+            MenuItem=lambda *args, **kwargs: (args, kwargs),
+            Icon=mock.Mock(return_value=tray_icon),
+        )
+        fake_appkit = SimpleNamespace(
+            NSApplication=SimpleNamespace(sharedApplication=mock.Mock(return_value=object()))
+        )
+        fake_window = SimpleNamespace(
+            tray_started=False,
+            tray_icon=None,
+            current_profile="outside",
+            running=False,
+            log=mock.Mock(),
+            _tray_show=mock.Mock(),
+            _tray_apply_profile=lambda _profile: mock.Mock(),
+            _tray_toggle=mock.Mock(),
+            _tray_quit=mock.Mock(),
+        )
+
+        with (
+            mock.patch.object(app, "IS_MAC", True),
+            mock.patch.object(app, "pystray", fake_pystray),
+            mock.patch.dict(sys.modules, {"AppKit": fake_appkit}),
+        ):
+            app.DarkWhiteModeApp.start_tray_icon(fake_window)
+
+        tray_icon.run_detached.assert_called_once_with()
+        tray_icon.run.assert_not_called()
+        self.assertTrue(fake_window.tray_started)
+        self.assertIn("macOS menu bar", fake_window.log.call_args.args[0])
 
 
 if __name__ == "__main__":

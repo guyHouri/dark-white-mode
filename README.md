@@ -36,9 +36,9 @@ Credits: Guy Houri
 
 ## macOS
 
-The macOS build is produced and tested by GitHub Actions on a real macOS runner and contains a native `.icns` application icon. Branch and pull-request artifacts are intentionally unsigned test builds. Tagged releases are code-signed, notarized by Apple, stapled, and verified by Gatekeeper before they can be published.
+The macOS build is produced and runtime-tested by GitHub Actions on a real Apple Silicon macOS runner and contains a native `.icns` application icon. The packaged `.app` is launched twice in CI: once for native integration checks and once as a real GUI window with its menu-bar icon. The native checks exercise Cocoa, CoreGraphics, display enumeration, a no-change gamma-table round trip when a display is available, appearance detection, LaunchAgent generation, the bundle identifier, and the bundled icon.
 
-The existing v0.8.0 release predates that release gate and is unsigned. For an unsigned development artifact, macOS may require right-clicking the app and choosing Open, or removing quarantine with:
+The project does not require an Apple Developer account. Builds are therefore ad-hoc signed by the macOS build tools rather than notarized by Apple. On first launch, Gatekeeper may require right-clicking the app and choosing Open. If quarantine still blocks a build you created or downloaded from this repository, it can be removed with:
 
 ```bash
 xattr -dr com.apple.quarantine dark-white-mode.app
@@ -69,17 +69,6 @@ GitHub Actions also builds a macOS app zip:
 ```text
 dark-white-mode-macos.zip
 ```
-
-## macOS release signing
-
-Tagged releases require all of the following GitHub Actions secrets. A release fails closed instead of publishing an unsigned Mac app when any secret is missing:
-
-- `APPLE_CERTIFICATE_P12`: base64-encoded Developer ID Application certificate and private key.
-- `APPLE_CERTIFICATE_PASSWORD`: password for the exported `.p12` file.
-- `APPLE_SIGNING_IDENTITY`: full Developer ID Application identity used by `codesign`.
-- `APPLE_ID`: Apple ID used by `notarytool`.
-- `APPLE_TEAM_ID`: Apple Developer team identifier.
-- `APPLE_APP_SPECIFIC_PASSWORD`: app-specific password used only for notarization.
 
 The workflow grants read-only repository access to build jobs. Write access is isolated to the release-publishing job, and third-party actions are pinned to immutable commits.
 

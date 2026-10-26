@@ -92,58 +92,37 @@ jobs:
           test -n "$icon_name"
           test -f "dist/dark-white-mode.app/Contents/Resources/$icon_name"
 
-      - name: Validate macOS release signing configuration
-        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/')
+      - name: Smoke-test packaged macOS app on a real Mac runner
+        if: runner.os == 'macOS'
         shell: bash
-        env:
-          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: |
           set -euo pipefail
-          missing=0
-          for name in APPLE_CERTIFICATE_P12 APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_TEAM_ID APPLE_APP_SPECIFIC_PASSWORD; do
-            if [[ -z "${!name}" ]]; then
-              echo "::error::$name is not configured"
-              missing=1
-            fi
-          done
-          exit "$missing"
+          sw_vers
+          uname -m
+          executable="dist/dark-white-mode.app/Contents/MacOS/dark-white-mode"
+          file "$executable"
 
-      - name: Import macOS signing certificate
-        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/')
-        shell: bash
-        env:
-          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-        run: |
-          set -euo pipefail
-          certificate_path="$RUNNER_TEMP/dark-white-mode-signing.p12"
-          keychain_path="$RUNNER_TEMP/dark-white-mode-signing.keychain-db"
-          keychain_password="$(openssl rand -hex 32)"
-          echo "::add-mask::$keychain_password"
-          echo "CERTIFICATE_PATH=$certificate_path" >> "$GITHUB_ENV"
-          echo "KEYCHAIN_PATH=$keychain_path" >> "$GITHUB_ENV"
-          echo "KEYCHAIN_PASSWORD=$keychain_password" >> "$GITHUB_ENV"
-          CERTIFICATE_PATH="$certificate_path" python -c "import base64, os, pathlib; pathlib.Path(os.environ['CERTIFICATE_PATH']).write_bytes(base64.b64decode(os.environ['APPLE_CERTIFICATE_P12']))"
-          security create-keychain -p "$keychain_password" "$keychain_path"
-          security set-keychain-settings -lut 21600 "$keychain_path"
-          security unlock-keychain -p "$keychain_password" "$keychain_path"
-          security import "$certificate_path" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain_path"
-          security set-key-partition-list -S apple-tool:,apple: -k "$keychain_password" "$keychain_path"
-          security list-keychains -d user -s "$keychain_path"
+          runtime_result="$RUNNER_TEMP/dark-white-mode-runtime-smoke.json"
+          DARK_WHITE_MODE_SMOKE_OUTPUT="$runtime_result" "$executable" --macos-runtime-smoke-test
+          cat "$runtime_result"
+          python -c "import json, sys; data=json.load(open(sys.argv[1])); assert data['ok'], data" "$runtime_result"
 
-      - name: Sign macOS app
-        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/')
-        shell: bash
-        env:
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-        run: |
-          set -euo pipefail
-          codesign --force --deep --strict --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" dist/dark-white-mode.app
+          gui_result="$RUNNER_TEMP/dark-white-mode-gui-smoke.json"
+          EXECUTABLE="$executable" GUI_RESULT="$gui_result" python - <<'PY'
+          import os
+          import subprocess
+
+          environment = dict(os.environ)
+          environment["DARK_WHITE_MODE_SMOKE_OUTPUT"] = os.environ["GUI_RESULT"]
+          subprocess.run(
+              [os.environ["EXECUTABLE"], "--macos-gui-smoke-test"],
+              check=True,
+              env=environment,
+              timeout=45,
+          )
+          PY
+          cat "$gui_result"
+          python -c "import json, sys; data=json.load(open(sys.argv[1])); assert data['ok'], data" "$gui_result"
           codesign --verify --deep --strict --verbose=2 dist/dark-white-mode.app
 
       - name: Package macOS app
@@ -153,44 +132,12 @@ jobs:
           set -euo pipefail
           ditto -c -k --keepParent dist/dark-white-mode.app dist/dark-white-mode-macos.zip
 
-      - name: Notarize and staple macOS app
-        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/')
-        shell: bash
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-        run: |
-          set -euo pipefail
-          xcrun notarytool submit dist/dark-white-mode-macos.zip \
-            --apple-id "$APPLE_ID" \
-            --team-id "$APPLE_TEAM_ID" \
-            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-            --wait
-          xcrun stapler staple dist/dark-white-mode.app
-          rm -f dist/dark-white-mode-macos.zip
-          ditto -c -k --keepParent dist/dark-white-mode.app dist/dark-white-mode-macos.zip
-          codesign --verify --deep --strict --verbose=2 dist/dark-white-mode.app
-          xcrun stapler validate dist/dark-white-mode.app
-          spctl --assess --type execute --verbose=4 dist/dark-white-mode.app
-
       - name: Write macOS checksum
         if: runner.os == 'macOS'
         shell: bash
         run: |
           cd dist
           shasum -a 256 dark-white-mode-macos.zip > dark-white-mode-macos.zip.sha256
-
-      - name: Clean up macOS signing keychain
-        if: always() && runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/')
-        shell: bash
-        run: |
-          if [[ -n "${KEYCHAIN_PATH:-}" ]]; then
-            security delete-keychain "$KEYCHAIN_PATH" || true
-          fi
-          if [[ -n "${CERTIFICATE_PATH:-}" ]]; then
-            rm -f "$CERTIFICATE_PATH"
-          fi
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
