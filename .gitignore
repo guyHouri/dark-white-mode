@@ -3,3 +3,6 @@ build/
 dist/
 *.spec
 assets/*.ico
+assets/*.png
+assets/*.icns
+assets/*.iconset/

@@ -1,3 +1,7 @@
+param(
+    [switch]$Install
+)
+
 $ErrorActionPreference = "Stop"
 
 function Invoke-Checked {
@@ -9,7 +13,7 @@ function Invoke-Checked {
     }
 }
 
-Invoke-Checked { python -m pip install --user --upgrade pyinstaller pystray pillow==12.1.0 }
+Invoke-Checked { python -m pip install --user --upgrade -r requirements.txt }
 Invoke-Checked { python -m unittest discover -s tests -v }
 
 $iconPath = Join-Path $PWD "assets\dark-white-mode.ico"
@@ -20,3 +24,7 @@ Invoke-Checked {
 
 Write-Host ""
 Write-Host "Built: $PWD\dist\dark-white-mode.exe"
+
+if ($Install) {
+    & "$PSScriptRoot\install.ps1" -Launch
+}

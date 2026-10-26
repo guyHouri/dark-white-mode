@@ -40,6 +40,7 @@ CREATE_NO_WINDOW = 0x08000000
 WM_SETTINGCHANGE = 0x001A
 HWND_BROADCAST = 0xFFFF
 SMTO_ABORTIFHUNG = 0x0002
+WINDOWS_STARTUP_APPROVED_ENABLED = bytes([0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
 POWER_SCHEME_BALANCED = "SCHEME_BALANCED"
 POWER_SCHEME_SAVER = "SCHEME_MAX"
 PROCESSOR_SUBGROUP = "SUB_PROCESSOR"
@@ -119,9 +120,9 @@ PROFILE_ALIASES = {
 
 
 DEFAULT_CONFIG = {
-    "config_version": 8,
+    "config_version": 9,
     "start_with_windows": True,
-    "start_minimized_to_tray": True,
+    "start_minimized_to_tray": False,
     "app_window_theme": True,
     "app_theme": "white",
     "current_profile": DEFAULT_PROFILE,
@@ -267,6 +268,8 @@ def merge_config_data(data: dict) -> dict:
         merged["start_minimized_to_tray"] = True
     if config_version < 6:
         merged["software_dimming"] = False
+    if config_version < 9:
+        merged["start_minimized_to_tray"] = False
     if "current_profile" not in data:
         merged["current_profile"] = profile_from_legacy_mode(data.get("last_mode", data.get("app_theme", "white")))
         if bool(merged.get("app_window_theme", True)):
@@ -340,10 +343,38 @@ def quote_command_part(value: str | Path) -> str:
     return '"' + str(value).replace('"', r'\"') + '"'
 
 
+def windows_packaged_executable_path() -> Path:
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    base = Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"
+    return base / "Programs" / APP_NAME / f"{APP_NAME}.exe"
+
+
+def python_gui_executable_path() -> Path:
+    executable = Path(sys.executable).absolute()
+    if IS_WINDOWS:
+        pythonw = executable.with_name("pythonw.exe")
+        if pythonw.exists():
+            return pythonw
+    return executable
+
+
+def source_launch_command_parts() -> list[str]:
+    return [str(python_gui_executable_path()), str(Path(__file__).absolute())]
+
+
 def app_launch_command_parts() -> list[str]:
     if getattr(sys, "frozen", False):
-        return [sys.executable]
-    return [sys.executable, str(Path(__file__).resolve())]
+        launch_path = Path(sys.argv[0]) if sys.argv and sys.argv[0] else Path(sys.executable)
+        if not launch_path.is_absolute():
+            launch_path = Path.cwd() / launch_path
+        if launch_path.exists():
+            return [str(launch_path.absolute())]
+        return [str(Path(sys.executable).absolute())]
+    if IS_WINDOWS:
+        packaged_path = windows_packaged_executable_path()
+        if packaged_path.exists():
+            return [str(packaged_path.absolute())]
+    return source_launch_command_parts()
 
 
 def build_startup_command(command_parts: list[str], minimized_to_tray: bool = True) -> str:
@@ -355,6 +386,13 @@ def build_startup_command(command_parts: list[str], minimized_to_tray: bool = Tr
 
 def startup_registry_command(minimized_to_tray: bool = True) -> str:
     return build_startup_command(app_launch_command_parts(), minimized_to_tray)
+
+
+def startup_task_argument_string(command_parts: list[str], minimized_to_tray: bool = True) -> str:
+    arguments = [quote_command_part(part) for part in command_parts[1:]]
+    if minimized_to_tray:
+        arguments.append("--startup")
+    return " ".join(arguments)
 
 
 def macos_launch_agent_label() -> str:
@@ -381,21 +419,80 @@ def build_macos_launch_agent_plist(command_parts: list[str], minimized_to_tray: 
     return plistlib.dumps(payload, sort_keys=True)
 
 
+def set_windows_startup_approved(enabled: bool) -> None:
+    if not IS_WINDOWS or winreg is None:
+        return
+    key_path = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
+    with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
+        if enabled:
+            winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_BINARY, WINDOWS_STARTUP_APPROVED_ENABLED)
+            return
+        try:
+            winreg.DeleteValue(key, APP_NAME)
+        except FileNotFoundError:
+            pass
+
+
+def clear_windows_run_startup() -> None:
+    if not IS_WINDOWS or winreg is None:
+        return
+    key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+    with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
+        try:
+            winreg.DeleteValue(key, APP_NAME)
+        except FileNotFoundError:
+            pass
+    set_windows_startup_approved(False)
+
+
+def build_windows_startup_task_script(enabled: bool, command_parts: list[str], minimized_to_tray: bool = True) -> str:
+    payload = {
+        "enabled": bool(enabled),
+        "task_name": APP_NAME,
+        "executable": str(command_parts[0]),
+        "arguments": startup_task_argument_string(command_parts, minimized_to_tray),
+        "working_directory": shortcut_working_directory(command_parts),
+    }
+    payload_json = json.dumps(payload)
+    return f"""
+$data = @'
+{payload_json}
+'@ | ConvertFrom-Json
+$taskName = $data.task_name
+if ($data.enabled) {{
+    $user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $action = New-ScheduledTaskAction -Execute $data.executable -Argument $data.arguments -WorkingDirectory $data.working_directory
+    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+    $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
+}} else {{
+    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+}}
+"""
+
+
+def set_windows_startup_task(enabled: bool, minimized_to_tray: bool = True) -> StepResult:
+    script = build_windows_startup_task_script(enabled, app_launch_command_parts(), minimized_to_tray)
+    completed = run_hidden(
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+        timeout=20,
+    )
+    if completed.returncode == 0:
+        message = "Enabled Windows startup scheduled task." if enabled else "Disabled Windows startup scheduled task."
+        return StepResult("Startup", True, message)
+    message = (completed.stderr or completed.stdout or "").strip()
+    return StepResult("Startup", False, "Windows startup scheduled task update failed. " + message)
+
+
 def set_windows_startup(enabled: bool, minimized_to_tray: bool = True) -> StepResult:
     if not IS_WINDOWS or winreg is None:
         return StepResult("Startup", False, "Windows startup is only available on Windows.")
     try:
-        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
-        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
-            if enabled:
-                winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, startup_registry_command(minimized_to_tray))
-            else:
-                try:
-                    winreg.DeleteValue(key, APP_NAME)
-                except FileNotFoundError:
-                    pass
-        message = "Enabled Windows startup." if enabled else "Disabled Windows startup."
-        return StepResult("Startup", True, message)
+        result = set_windows_startup_task(enabled, minimized_to_tray)
+        if result.ok:
+            clear_windows_run_startup()
+        return result
     except Exception as exc:
         return StepResult("Startup", False, f"Windows startup update failed: {exc}")
 
@@ -441,14 +538,14 @@ def windows_start_menu_shortcut_path() -> Path:
 
 def shortcut_working_directory(command_parts: list[str]) -> str:
     if getattr(sys, "frozen", False):
-        return str(Path(command_parts[0]).resolve().parent)
+        return str(Path(command_parts[0]).absolute().parent)
     if len(command_parts) > 1:
-        return str(Path(command_parts[1]).resolve().parent)
-    return str(Path(command_parts[0]).resolve().parent)
+        return str(Path(command_parts[1]).absolute().parent)
+    return str(Path(command_parts[0]).absolute().parent)
 
 
 def build_windows_shortcut_script(shortcut_path: Path, command_parts: list[str]) -> str:
-    target_path = str(Path(command_parts[0]).resolve())
+    target_path = str(Path(command_parts[0]).absolute())
     arguments = " ".join(quote_command_part(part) for part in command_parts[1:])
     payload = {
         "shortcut_path": str(shortcut_path),
@@ -831,16 +928,22 @@ def create_tray_image():
 
 
 def save_app_icon(path: Path) -> Path:
-    image = create_icon_image(256)
+    suffix = path.suffix.lower()
+    image = create_icon_image(1024 if suffix == ".png" else 256)
     if image is None:
         raise RuntimeError("Pillow is required to generate the app icon.")
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    image.save(
-        path,
-        format="ICO",
-        sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
-    )
+    if suffix == ".ico":
+        image.save(
+            path,
+            format="ICO",
+            sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
+        )
+    elif suffix == ".png":
+        image.save(path, format="PNG")
+    else:
+        raise ValueError("App icons can only be written as .ico or .png files.")
     return path
 
 
