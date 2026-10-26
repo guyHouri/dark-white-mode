@@ -423,6 +423,35 @@ class MiscTests(unittest.TestCase):
 
         self.assertEqual(app.build_dimmed_gamma_table_values(values, 25), [0.0, 0.125, 0.25])
 
+    def test_macos_brightness_prefers_native_display_services(self):
+        with (
+            mock.patch.object(app, "set_macos_native_brightness", return_value=(1, [])),
+            mock.patch.object(app, "find_command") as find_command,
+        ):
+            result = app.set_brightness_macos(42)
+
+        self.assertTrue(result.ok)
+        self.assertIn("42%", result.message)
+        self.assertIn("through macOS", result.message)
+        find_command.assert_not_called()
+
+    def test_macos_brightness_falls_back_to_homebrew_tool(self):
+        completed = SimpleNamespace(returncode=0, stdout="", stderr="")
+        with (
+            mock.patch.object(
+                app,
+                "set_macos_native_brightness",
+                return_value=(0, ["Native interface unavailable."]),
+            ),
+            mock.patch.object(app, "find_command", return_value=Path("/opt/homebrew/bin/brightness")),
+            mock.patch.object(app, "run_hidden", return_value=completed) as run_hidden,
+        ):
+            result = app.set_brightness_macos(42)
+
+        self.assertTrue(result.ok)
+        self.assertIn("Homebrew fallback", result.message)
+        run_hidden.assert_called_once_with([str(Path("/opt/homebrew/bin/brightness")), "0.42"], timeout=10)
+
     def test_flux_run_value_parses_quoted_path(self):
         parsed = app.parse_flux_run_value(r'"C:\Users\me\AppData\Local\FluxSoftware\Flux\flux.exe" /noshow')
 
