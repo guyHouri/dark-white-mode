@@ -2613,6 +2613,15 @@ def macos_runtime_smoke_test() -> int:
         checks["gamma_round_trip_count"] = 0
 
     checks["appearance"] = read_macos_mode()
+    try:
+        display_services = _display_services()
+        checks["native_brightness_api_loaded"] = all(
+            callable(getattr(display_services, function_name, None))
+            for function_name in ("DisplayServicesGetBrightness", "DisplayServicesSetBrightness")
+        )
+    except Exception as exc:
+        checks["native_brightness_api_loaded"] = False
+        result["warnings"].append(f"Native brightness API loading failed: {exc}")
     brightness_values, brightness_errors = read_macos_native_brightness()
     checks["native_brightness_display_count"] = len(brightness_values)
     result["warnings"].extend(brightness_errors)
@@ -2660,6 +2669,7 @@ def macos_runtime_smoke_test() -> int:
     required_checks = (
         checks.get("cocoa_application") is True,
         checks.get("core_graphics_loaded") is True,
+        checks.get("native_brightness_api_loaded") is True,
         checks.get("launch_agent") is True,
         checks.get("app_icon_generated") is True,
         checks.get("bundle_identifier") == "com.guyhouri.dark-white-mode",
