@@ -8,8 +8,8 @@ Credits: Guy Houri
 
 - Windows/macOS system dark and light appearance.
 - The app window's own dark/white theme, either with the mode profile or with the separate App Theme button.
-- Windows/macOS startup registration, so the app can launch automatically after restart and start minimized to the tray/menu bar.
-- A Windows Start Menu shortcut, so Windows Search can find the app with the same icon used by the executable.
+- Windows/macOS startup registration, so the app can launch automatically after restart. It opens visibly by default and can optionally start minimized to the tray/menu bar.
+- A per-user Windows installation under `%LOCALAPPDATA%\Programs\dark-white-mode`, plus a Start Menu shortcut that uses the packaged app icon.
 - Windows Outside battery optimization, using Power saver and a 99% CPU maximum processor state while Outside mode is active.
 - Chrome's `chrome://flags` force-dark experiment by editing Chrome's per-user `Local State` file.
 - Display brightness through Windows WMI and DDC/CI monitor control where supported.
@@ -27,7 +27,7 @@ Credits: Guy Houri
 
 - Chrome must be closed before the flag file can be changed reliably. By default, the app closes Chrome automatically, force-closes background Chrome processes if needed, updates the flag, sets each Chrome profile to continue where it left off, suppresses Chrome's crash-restore bubble where supported, and reopens Chrome.
 - Closing or minimizing the window keeps the app running in the Windows system tray or hidden-icons overflow menu. Use the tray menu's Quit action to fully exit.
-- Startup is enabled by default. On Windows the app registers itself under the current user's startup apps. On macOS it writes a per-user LaunchAgent. Both launch with `--startup`, which starts minimized to the tray/menu bar.
+- Startup is enabled by default. On Windows the app registers a per-user Task Scheduler logon task, which is more reliable than the basic Startup Apps Run key. On macOS it writes a per-user LaunchAgent. The app opens visibly by default; enable "Start minimized to tray" to launch it hidden with `--startup`.
 - Brightness control depends on the display. Windows uses WMI and DDC/CI where supported. macOS requires the optional Homebrew `brightness` tool.
 - Outside battery optimization is Windows-only. Switching to Night or Work Indoors restores the Balanced power scheme and a 100% CPU maximum processor state. Lenovo battery charge thresholds, Conservation Mode, and Rapid Charge still need to be managed in Lenovo Commercial Vantage.
 - PWM-safe software dimming is off by default. It stores the current gamma/LUT tables before dimming, restores them before each mode change, and restores them again when the app quits or the Python process exits. Because f.lux, HDR, Night light, True Tone, graphics drivers, and calibration tools can also own the gamma/LUT pipeline, the app reapplies software dimming after f.lux changes and may show a warning if the OS or driver rejects gamma changes.
@@ -36,7 +36,9 @@ Credits: Guy Houri
 
 ## macOS
 
-The macOS build is produced and tested by GitHub Actions on a real macOS runner. The app is currently unsigned, so macOS Gatekeeper may require right-clicking the app and choosing Open, or removing quarantine with:
+The macOS build is produced and runtime-tested by GitHub Actions on a real Apple Silicon macOS runner and contains a native `.icns` application icon. The packaged `.app` is launched twice in CI: once for native integration checks and once as a real GUI window with its menu-bar icon. The native checks exercise Cocoa, CoreGraphics, display enumeration, a no-change gamma-table round trip when a display is available, appearance detection, LaunchAgent generation, the bundle identifier, and the bundled icon.
+
+The project does not require an Apple Developer account. Builds are therefore ad-hoc signed by the macOS build tools rather than notarized by Apple. On first launch, Gatekeeper may require right-clicking the app and choosing Open. If quarantine still blocks a build you created or downloaded from this repository, it can be removed with:
 
 ```bash
 xattr -dr com.apple.quarantine dark-white-mode.app
@@ -50,6 +52,12 @@ From this folder:
 .\build.ps1
 ```
 
+To build, install the packaged executable for the current Windows user, repair the startup task and Start Menu shortcut, and launch it:
+
+```powershell
+.\build.ps1 -Install
+```
+
 The distributable executable is created at:
 
 ```text
@@ -61,6 +69,12 @@ GitHub Actions also builds a macOS app zip:
 ```text
 dark-white-mode-macos.zip
 ```
+
+The workflow grants read-only repository access to build jobs. Write access is isolated to the release-publishing job, and third-party actions are pinned to immutable commits.
+
+## Safety boundaries
+
+The app runs per user and does not contain network, analytics, or telemetry code. It does intentionally change local display and appearance settings, register itself for login, edit Chrome profile files after creating backups, and optionally close and reopen Chrome. PWM-safe software dimming changes display gamma tables and restores the captured tables when switching modes or exiting normally.
 
 ## Developer Test
 

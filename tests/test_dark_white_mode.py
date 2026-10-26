@@ -2,9 +2,11 @@ import json
 import plistlib
 import queue
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import dark_white_mode as app
@@ -95,7 +97,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(migrated["app_theme"], "white")
         self.assertEqual(migrated["current_profile"], "outside")
         self.assertTrue(migrated["start_with_windows"])
-        self.assertTrue(migrated["start_minimized_to_tray"])
+        self.assertFalse(migrated["start_minimized_to_tray"])
         self.assertTrue(migrated["battery_optimization"])
         self.assertFalse(migrated["software_dimming"])
         self.assertEqual(migrated["night_software_dimming"], app.DEFAULT_CONFIG["night_software_dimming"])
@@ -436,6 +438,78 @@ class MiscTests(unittest.TestCase):
 
         self.assertEqual(command, r'"C:\Program Files\dark-white-mode\dark-white-mode.exe"')
 
+    def test_startup_task_argument_string_adds_startup_arg_when_minimized(self):
+        arguments = app.startup_task_argument_string(
+            [r"C:\Python\pythonw.exe", r"C:\Apps\dark mode\dark_white_mode.py"],
+            True,
+        )
+
+        self.assertEqual(arguments, r'"C:\Apps\dark mode\dark_white_mode.py" --startup')
+
+    def test_windows_startup_task_script_registers_logon_task(self):
+        script = app.build_windows_startup_task_script(
+            True,
+            [r"C:\Python\pythonw.exe", r"C:\Apps\dark_white_mode.py"],
+            False,
+        )
+
+        self.assertIn("Register-ScheduledTask", script)
+        self.assertIn("New-ScheduledTaskTrigger -AtLogOn", script)
+        self.assertIn(r"C:\\Python\\pythonw.exe", script)
+        self.assertIn(r"C:\\Apps\\dark_white_mode.py", script)
+        self.assertNotIn("--startup", script)
+
+    def test_windows_startup_approved_enabled_value(self):
+        self.assertEqual(app.WINDOWS_STARTUP_APPROVED_ENABLED[:4], bytes([0x02, 0, 0, 0]))
+        self.assertEqual(len(app.WINDOWS_STARTUP_APPROVED_ENABLED), 12)
+
+    def test_source_app_launch_uses_pythonw_script_on_windows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pythonw_path = Path(tmp) / "pythonw.exe"
+            script_path = Path(tmp) / "dark_white_mode.py"
+            packaged_path = Path(tmp) / "missing" / "dark-white-mode.exe"
+            pythonw_path.write_text("", encoding="utf-8")
+            script_path.write_text("", encoding="utf-8")
+
+            with (
+                mock.patch.object(app, "IS_WINDOWS", True),
+                mock.patch.object(app.sys, "frozen", False, create=True),
+                mock.patch.object(app, "python_gui_executable_path", return_value=pythonw_path),
+                mock.patch.object(app, "windows_packaged_executable_path", return_value=packaged_path),
+                mock.patch.object(app, "__file__", str(script_path)),
+            ):
+                command_parts = app.app_launch_command_parts()
+
+        self.assertEqual(command_parts, [str(pythonw_path), str(script_path)])
+
+    def test_source_app_prefers_installed_windows_executable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            packaged_path = Path(tmp) / "dark-white-mode.exe"
+            packaged_path.write_text("", encoding="utf-8")
+
+            with (
+                mock.patch.object(app, "IS_WINDOWS", True),
+                mock.patch.object(app.sys, "frozen", False, create=True),
+                mock.patch.object(app, "windows_packaged_executable_path", return_value=packaged_path),
+            ):
+                command_parts = app.app_launch_command_parts()
+
+        self.assertEqual(command_parts, [str(packaged_path)])
+
+    def test_frozen_app_launch_uses_original_launch_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            launch_path = Path(tmp) / "dark-white-mode.exe"
+            launch_path.write_text("", encoding="utf-8")
+
+            with (
+                mock.patch.object(app.sys, "frozen", True, create=True),
+                mock.patch.object(app.sys, "argv", [str(launch_path)]),
+                mock.patch.object(app.sys, "executable", r"C:\alias\dark-white-mode.exe"),
+            ):
+                command_parts = app.app_launch_command_parts()
+
+        self.assertEqual(command_parts, [str(launch_path)])
+
     def test_start_menu_shortcut_script_uses_exe_icon(self):
         script = app.build_windows_shortcut_script(
             Path(r"C:\Users\me\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\dark-white-mode.lnk"),
@@ -452,6 +526,15 @@ class MiscTests(unittest.TestCase):
             self.assertTrue(icon_path.exists())
             self.assertGreater(icon_path.stat().st_size, 0)
 
+    def test_macos_icon_source_can_be_generated_as_png(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            icon_path = app.save_app_icon(Path(tmp) / "dark-white-mode.png")
+
+            self.assertTrue(icon_path.exists())
+            self.assertGreater(icon_path.stat().st_size, 0)
+            with app.Image.open(icon_path) as image:
+                self.assertEqual(image.size, (1024, 1024))
+
     def test_macos_launch_agent_arguments_include_startup(self):
         arguments = app.macos_launch_agent_program_arguments(["/Applications/dark-white-mode.app/Contents/MacOS/dark-white-mode"], True)
 
@@ -464,6 +547,41 @@ class MiscTests(unittest.TestCase):
         self.assertEqual(decoded["Label"], "com.guyhouri.dark-white-mode")
         self.assertTrue(decoded["RunAtLoad"])
         self.assertIn("--startup", decoded["ProgramArguments"])
+
+    def test_macos_tray_uses_detached_appkit_integration(self):
+        tray_icon = mock.Mock()
+        tray_icon.visible = True
+        fake_pystray = SimpleNamespace(
+            Menu=lambda *items: items,
+            MenuItem=lambda *args, **kwargs: (args, kwargs),
+            Icon=mock.Mock(return_value=tray_icon),
+        )
+        fake_appkit = SimpleNamespace(
+            NSApplication=SimpleNamespace(sharedApplication=mock.Mock(return_value=object()))
+        )
+        fake_window = SimpleNamespace(
+            tray_started=False,
+            tray_icon=None,
+            current_profile="outside",
+            running=False,
+            log=mock.Mock(),
+            _tray_show=mock.Mock(),
+            _tray_apply_profile=lambda _profile: mock.Mock(),
+            _tray_toggle=mock.Mock(),
+            _tray_quit=mock.Mock(),
+        )
+
+        with (
+            mock.patch.object(app, "IS_MAC", True),
+            mock.patch.object(app, "pystray", fake_pystray),
+            mock.patch.dict(sys.modules, {"AppKit": fake_appkit}),
+        ):
+            app.DarkWhiteModeApp.start_tray_icon(fake_window)
+
+        tray_icon.run_detached.assert_called_once_with()
+        tray_icon.run.assert_not_called()
+        self.assertTrue(fake_window.tray_started)
+        self.assertIn("macOS menu bar", fake_window.log.call_args.args[0])
 
 
 if __name__ == "__main__":
