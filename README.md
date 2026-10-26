@@ -4,6 +4,21 @@
 
 Credits: Guy Houri
 
+## Easiest installation
+
+### Mac
+
+1. Open the [latest release](https://github.com/guyHouri/dark-white-mode/releases/latest).
+2. Download `Install-dark-white-mode.zip` and unzip it if macOS does not unzip it automatically.
+3. In Finder, right-click `Install-dark-white-mode.command`, choose **Open**, and confirm **Open**.
+4. If f.lux is missing, the installer offers to download the official Mac version from `justgetflux.com`, validates its Apple signature, installs both apps under `~/Applications`, and launches them.
+
+No Terminal commands, Python installation, Homebrew, or Apple Developer account are required for the normal human installation. The separate `dark-white-mode-macos.zip` download contains the same installer beside the app for an offline app install.
+
+### Give the GitHub link to an AI
+
+Send the AI this repository URL and say: **“Install the latest release and follow `AGENTS.md`. Install official f.lux too if it is missing.”** The repository's [AGENTS.md](AGENTS.md) gives an agent checksum verification, installation, f.lux, and post-install test instructions.
+
 ## What the button changes
 
 - Windows/macOS system dark and light appearance.
@@ -64,9 +79,11 @@ The distributable executable is created at:
 dist\dark-white-mode.exe
 ```
 
-GitHub Actions also builds a macOS app zip:
+GitHub Actions also builds a one-file macOS installer and an app zip:
 
 ```text
+Install-dark-white-mode.command
+Install-dark-white-mode.zip
 dark-white-mode-macos.zip
 ```
 

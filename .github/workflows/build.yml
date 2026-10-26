@@ -97,6 +97,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          bash -n install-macos.command
+          bash install-macos.command --check-flux
           sw_vers
           uname -m
           executable="dist/dark-white-mode.app/Contents/MacOS/dark-white-mode"
@@ -130,7 +132,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ditto -c -k --keepParent dist/dark-white-mode.app dist/dark-white-mode-macos.zip
+          package_directory="dist/dark-white-mode-macos"
+          mkdir -p "$package_directory"
+          ditto dist/dark-white-mode.app "$package_directory/dark-white-mode.app"
+          cp install-macos.command "$package_directory/Install-dark-white-mode.command"
+          cp MAC_INSTALL.txt "$package_directory/READ-ME-FIRST.txt"
+          chmod +x "$package_directory/Install-dark-white-mode.command"
+          ditto -c -k --keepParent "$package_directory" dist/dark-white-mode-macos.zip
+          cp install-macos.command dist/Install-dark-white-mode.command
+          chmod +x dist/Install-dark-white-mode.command
+          ditto -c -k --sequesterRsrc --keepParent dist/Install-dark-white-mode.command dist/Install-dark-white-mode.zip
 
       - name: Write macOS checksum
         if: runner.os == 'macOS'
@@ -138,6 +149,8 @@ jobs:
         run: |
           cd dist
           shasum -a 256 dark-white-mode-macos.zip > dark-white-mode-macos.zip.sha256
+          shasum -a 256 Install-dark-white-mode.command > Install-dark-white-mode.command.sha256
+          shasum -a 256 Install-dark-white-mode.zip > Install-dark-white-mode.zip.sha256
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -146,6 +159,18 @@ jobs:
           path: |
             ${{ matrix.release_asset }}
             ${{ matrix.release_asset }}.sha256
+          if-no-files-found: error
+
+      - name: Upload one-file macOS installer artifact
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dark-white-mode-macos-installer
+          path: |
+            dist/Install-dark-white-mode.command
+            dist/Install-dark-white-mode.command.sha256
+            dist/Install-dark-white-mode.zip
+            dist/Install-dark-white-mode.zip.sha256
           if-no-files-found: error
 
   release:
