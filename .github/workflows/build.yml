@@ -141,16 +141,19 @@ jobs:
           ditto -c -k --keepParent "$package_directory" dist/dark-white-mode-macos.zip
           cp install-macos.command dist/Install-dark-white-mode.command
           chmod +x dist/Install-dark-white-mode.command
-          (
-            cd dist
-            ditto -c -k --sequesterRsrc --keepParent Install-dark-white-mode.command Install-dark-white-mode.zip
-          )
+          standalone_directory="dist/Install-dark-white-mode"
+          mkdir -p "$standalone_directory"
+          cp install-macos.command "$standalone_directory/Install-dark-white-mode.command"
+          cp MAC_INSTALL.txt "$standalone_directory/READ-ME-FIRST.txt"
+          chmod +x "$standalone_directory/Install-dark-white-mode.command"
+          ditto -c -k --sequesterRsrc --keepParent "$standalone_directory" dist/Install-dark-white-mode.zip
           installer_check="$RUNNER_TEMP/dark-white-mode-installer-zip"
           mkdir -p "$installer_check"
           ditto -x -k dist/Install-dark-white-mode.zip "$installer_check"
-          test -f "$installer_check/Install-dark-white-mode.command"
-          chmod +x "$installer_check/Install-dark-white-mode.command"
-          bash "$installer_check/Install-dark-white-mode.command" --help >/dev/null
+          extracted_installer="$installer_check/Install-dark-white-mode/Install-dark-white-mode.command"
+          test -f "$extracted_installer"
+          chmod +x "$extracted_installer"
+          bash "$extracted_installer" --help >/dev/null
 
       - name: Write macOS checksum
         if: runner.os == 'macOS'
