@@ -1610,19 +1610,117 @@ def find_command(candidates: list[str]) -> Path | None:
     return None
 
 
+def _display_services():
+    path = Path("/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices")
+    return ctypes.cdll.LoadLibrary(str(path))
+
+
+def read_macos_native_brightness() -> tuple[list[tuple[int, float]], list[str]]:
+    if not IS_MAC:
+        return [], ["Native display brightness is only available on macOS."]
+
+    displays, errors = _active_macos_display_ids()
+    if not displays:
+        return [], errors or ["No active macOS displays were found."]
+
+    try:
+        display_services = _display_services()
+        display_services.DisplayServicesGetBrightness.argtypes = [
+            ctypes.c_uint32,
+            ctypes.POINTER(ctypes.c_float),
+        ]
+        display_services.DisplayServicesGetBrightness.restype = ctypes.c_int
+    except Exception as exc:
+        return [], [f"Native macOS brightness access failed: {exc}"]
+
+    values = []
+    for display_id in displays:
+        try:
+            brightness = ctypes.c_float()
+            error = int(
+                display_services.DisplayServicesGetBrightness(
+                    display_id,
+                    ctypes.byref(brightness),
+                )
+            )
+            if error == 0:
+                values.append((display_id, float(brightness.value)))
+            else:
+                errors.append(f"Display {display_id}: native brightness read failed with error {error}.")
+        except Exception as exc:
+            errors.append(f"Display {display_id}: native brightness read failed: {exc}")
+
+    return values, errors
+
+
+def write_macos_native_brightness(values: list[tuple[int, float]]) -> tuple[int, list[str]]:
+    if not IS_MAC:
+        return 0, ["Native display brightness is only available on macOS."]
+
+    displays, errors = _active_macos_display_ids()
+    if not displays:
+        return 0, errors or ["No active macOS displays were found."]
+
+    try:
+        display_services = _display_services()
+        display_services.DisplayServicesSetBrightness.argtypes = [ctypes.c_uint32, ctypes.c_float]
+        display_services.DisplayServicesSetBrightness.restype = ctypes.c_int
+    except Exception as exc:
+        return 0, [f"Native macOS brightness access failed: {exc}"]
+
+    active_displays = set(displays)
+    changed = 0
+    for display_id, brightness in values:
+        if display_id not in active_displays:
+            continue
+        try:
+            normalized = max(0.0, min(1.0, float(brightness)))
+            error = int(display_services.DisplayServicesSetBrightness(display_id, normalized))
+            if error == 0:
+                changed += 1
+            else:
+                errors.append(f"Display {display_id}: native brightness update failed with error {error}.")
+        except Exception as exc:
+            errors.append(f"Display {display_id}: native brightness update failed: {exc}")
+
+    if not changed and not errors:
+        errors.append("No matching macOS display accepted native brightness control.")
+    return changed, errors
+
+
+def set_macos_native_brightness(level: int) -> tuple[int, list[str]]:
+    displays, errors = _active_macos_display_ids()
+    if not displays:
+        return 0, errors or ["No active macOS displays were found."]
+    changed, write_errors = write_macos_native_brightness(
+        [(display_id, level / 100) for display_id in displays]
+    )
+    return changed, errors + write_errors
+
+
 def set_brightness_macos(level: int) -> StepResult:
     level = clamp_int(level, 0, 100, 1)
+    changed, native_errors = set_macos_native_brightness(level)
+    if changed:
+        message = f"Brightness set to {level}% on {changed} display(s) through macOS."
+        if native_errors:
+            message += " " + " ".join(native_errors)
+        return StepResult("Brightness", True, message)
+
     brightness_tool = find_command(["brightness"])
     if not brightness_tool:
+        native_message = " ".join(native_errors)
         return StepResult(
             "Brightness",
             False,
-            "macOS brightness requires the optional 'brightness' command-line tool. Install it with Homebrew: brew install brightness.",
+            "Native macOS brightness control was unavailable. "
+            + native_message
+            + " Optional fallback: brew install brightness.",
         )
     try:
         completed = run_hidden([str(brightness_tool), str(level / 100)], timeout=10)
         if completed.returncode == 0:
-            return StepResult("Brightness", True, f"Brightness set to {level}%.")
+            return StepResult("Brightness", True, f"Brightness set to {level}% with the Homebrew fallback.")
         message = (completed.stderr or completed.stdout or "").strip()
         return StepResult("Brightness", False, "macOS brightness update failed. " + message)
     except Exception as exc:
@@ -2515,6 +2613,24 @@ def macos_runtime_smoke_test() -> int:
         checks["gamma_round_trip_count"] = 0
 
     checks["appearance"] = read_macos_mode()
+    try:
+        display_services = _display_services()
+        checks["native_brightness_api_loaded"] = all(
+            callable(getattr(display_services, function_name, None))
+            for function_name in ("DisplayServicesGetBrightness", "DisplayServicesSetBrightness")
+        )
+    except Exception as exc:
+        checks["native_brightness_api_loaded"] = False
+        result["warnings"].append(f"Native brightness API loading failed: {exc}")
+    brightness_values, brightness_errors = read_macos_native_brightness()
+    checks["native_brightness_display_count"] = len(brightness_values)
+    result["warnings"].extend(brightness_errors)
+    if brightness_values:
+        brightness_round_trip_count, brightness_write_errors = write_macos_native_brightness(brightness_values)
+        checks["native_brightness_round_trip_count"] = brightness_round_trip_count
+        result["warnings"].extend(brightness_write_errors)
+    else:
+        checks["native_brightness_round_trip_count"] = 0
     checks["brightness_command_available"] = find_command(["brightness"]) is not None
 
     try:
@@ -2553,6 +2669,7 @@ def macos_runtime_smoke_test() -> int:
     required_checks = (
         checks.get("cocoa_application") is True,
         checks.get("core_graphics_loaded") is True,
+        checks.get("native_brightness_api_loaded") is True,
         checks.get("launch_agent") is True,
         checks.get("app_icon_generated") is True,
         checks.get("bundle_identifier") == "com.guyhouri.dark-white-mode",
