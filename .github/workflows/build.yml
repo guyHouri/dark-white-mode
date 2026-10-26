@@ -148,7 +148,8 @@ jobs:
           installer_check="$RUNNER_TEMP/dark-white-mode-installer-zip"
           mkdir -p "$installer_check"
           ditto -x -k dist/Install-dark-white-mode.zip "$installer_check"
-          test -x "$installer_check/Install-dark-white-mode.command"
+          test -f "$installer_check/Install-dark-white-mode.command"
+          chmod +x "$installer_check/Install-dark-white-mode.command"
           bash "$installer_check/Install-dark-white-mode.command" --help >/dev/null
 
       - name: Write macOS checksum
