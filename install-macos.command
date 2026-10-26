@@ -76,7 +76,7 @@ done
 
 cleanup() {
     local path
-    for path in "${STAGING_PATHS[@]}"; do
+    for path in "${STAGING_PATHS[@]-}"; do
         if [ -n "$path" ] && [ -e "$path" ]; then
             rm -rf -- "$path"
         fi
