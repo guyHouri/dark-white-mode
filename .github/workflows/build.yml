@@ -28,7 +28,7 @@ jobs:
             artifact_name: dark-white-mode-windows
             release_asset: dist/dark-white-mode.exe
           - name: macOS
-            os: macos-latest
+            os: macos-15
             artifact_name: dark-white-mode-macos
             release_asset: dist/dark-white-mode-macos.zip
 
