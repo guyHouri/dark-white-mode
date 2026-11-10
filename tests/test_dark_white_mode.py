@@ -151,6 +151,18 @@ class ConfigTests(unittest.TestCase):
 
         self.assertEqual(migrated["app_theme"], "white")
 
+    def test_current_config_cannot_disable_safe_chrome_restore(self):
+        migrated = app.merge_config_data(
+            {
+                "config_version": app.DEFAULT_CONFIG["config_version"],
+                "reopen_chrome_after_flag": False,
+                "restore_chrome_pages": False,
+            }
+        )
+
+        self.assertTrue(migrated["reopen_chrome_after_flag"])
+        self.assertTrue(migrated["restore_chrome_pages"])
+
     def test_profile_id_is_normalized(self):
         migrated = app.merge_config_data({"config_version": app.DEFAULT_CONFIG["config_version"], "current_profile": "indoors"})
 
@@ -224,6 +236,48 @@ class ApplyWorkflowTests(unittest.TestCase):
         self.assertEqual(target_profile, "outside")
         set_battery_optimization.assert_called_once_with("outside")
         self.assertEqual([result.name for result in results], ["Power"])
+
+    def test_app_closed_chrome_is_always_reopened_with_restore(self):
+        runner = type("Runner", (), {"result_queue": queue.Queue()})()
+        settings = {
+            "windows_theme": False,
+            "battery_optimization": False,
+            "brightness": False,
+            "software_dimming": False,
+            "chrome_force_dark": True,
+            "flux": False,
+            "reopen_chrome_after_flag": False,
+            "restore_chrome_pages": False,
+            "_close_chrome_for_flag": True,
+        }
+
+        with (
+            mock.patch.object(app.software_gamma_dimmer, "is_active", return_value=False),
+            mock.patch.object(
+                app,
+                "close_chrome_for_flag",
+                return_value=app.StepResult("Chrome", True, "Chrome closed."),
+            ),
+            mock.patch.object(
+                app,
+                "set_chrome_force_dark",
+                return_value=app.StepResult("Chrome", True, "Chrome restored."),
+            ) as set_chrome_force_dark,
+        ):
+            app.DarkWhiteModeApp._apply_in_thread(runner, "night", settings)
+
+        set_chrome_force_dark.assert_called_once_with(True, True, True)
+
+    def test_startup_reapplies_only_color_effects(self):
+        runner = type("Runner", (), {"result_queue": queue.Queue()})()
+        settings = dict(app.DEFAULT_CONFIG)
+        expected = [app.StepResult("Software dimming", True, "Software dimming updated.")]
+
+        with mock.patch.object(app, "apply_profile_color_effects", return_value=expected) as apply_color_effects:
+            app.DarkWhiteModeApp._restore_startup_color_effects_in_thread(runner, "night", settings)
+
+        apply_color_effects.assert_called_once_with("night", settings)
+        self.assertEqual(runner.result_queue.get_nowait(), ("night", expected))
 
     def test_software_dimming_is_applied_after_flux(self):
         runner = type("Runner", (), {"result_queue": queue.Queue()})()
@@ -338,6 +392,13 @@ class ApplyWorkflowTests(unittest.TestCase):
 
 
 class MiscTests(unittest.TestCase):
+    def test_release_version_metadata_matches_application_version(self):
+        version_info = (Path(__file__).parents[1] / "assets" / "windows-version-info.txt").read_text(encoding="utf-8")
+
+        self.assertEqual(app.APP_VERSION, "0.11.0")
+        self.assertIn("StringStruct('FileVersion', '0.11.0')", version_info)
+        self.assertIn("filevers=(0, 11, 0, 0)", version_info)
+
     def test_mode_change_loading_text_names_target_mode(self):
         self.assertEqual(app.mode_change_status_text(True), "Changing to Dark mode. Please wait...")
         self.assertEqual(app.mode_change_status_text(False), "Changing to White mode. Please wait...")
@@ -467,26 +528,52 @@ class MiscTests(unittest.TestCase):
 
         self.assertEqual(command, r'"C:\Program Files\dark-white-mode\dark-white-mode.exe"')
 
-    def test_startup_task_argument_string_adds_startup_arg_when_minimized(self):
-        arguments = app.startup_task_argument_string(
-            [r"C:\Python\pythonw.exe", r"C:\Apps\dark mode\dark_white_mode.py"],
-            True,
+    def test_windows_startup_uses_run_entry_and_removes_legacy_task(self):
+        task_result = app.StepResult("Startup", True, "Legacy task removed.")
+        with (
+            mock.patch.object(app, "IS_WINDOWS", True),
+            mock.patch.object(app, "winreg", object()),
+            mock.patch.object(app, "set_windows_run_startup") as set_run_startup,
+            mock.patch.object(
+                app,
+                "remove_legacy_windows_startup_task",
+                return_value=task_result,
+            ) as remove_startup_task,
+        ):
+            result = app.set_windows_startup(True, False)
+
+        self.assertTrue(result.ok)
+        self.assertIn("Run entry", result.message)
+        set_run_startup.assert_called_once_with(True, False)
+        remove_startup_task.assert_called_once_with()
+
+    def test_flux_refresh_keeps_existing_process_alive(self):
+        key = mock.MagicMock()
+        fake_winreg = SimpleNamespace(
+            HKEY_CURRENT_USER=object(),
+            KEY_SET_VALUE=1,
+            REG_DWORD=4,
+            CreateKeyEx=mock.Mock(return_value=key),
+            SetValueEx=mock.Mock(),
         )
+        flux_path = Path(r"C:\Users\me\AppData\Local\FluxSoftware\Flux\flux.exe")
 
-        self.assertEqual(arguments, r'"C:\Apps\dark mode\dark_white_mode.py" --startup')
+        with (
+            mock.patch.object(app, "IS_MAC", False),
+            mock.patch.object(app, "winreg", fake_winreg),
+            mock.patch.object(app, "find_flux_exe", return_value=flux_path),
+            mock.patch.object(app, "is_process_running", return_value=True),
+            mock.patch.object(app, "popen_hidden") as popen_hidden,
+            mock.patch.object(app, "wait_for_process_start", return_value=True),
+            mock.patch.object(app, "process_stays_running", return_value=True),
+            mock.patch.object(app, "run_hidden") as run_hidden,
+        ):
+            result = app.set_flux_kelvin(2700)
 
-    def test_windows_startup_task_script_registers_logon_task(self):
-        script = app.build_windows_startup_task_script(
-            True,
-            [r"C:\Python\pythonw.exe", r"C:\Apps\dark_white_mode.py"],
-            False,
-        )
-
-        self.assertIn("Register-ScheduledTask", script)
-        self.assertIn("New-ScheduledTaskTrigger -AtLogOn", script)
-        self.assertIn(r"C:\\Python\\pythonw.exe", script)
-        self.assertIn(r"C:\\Apps\\dark_white_mode.py", script)
-        self.assertNotIn("--startup", script)
+        self.assertTrue(result.ok)
+        self.assertIn("without stopping", result.message)
+        popen_hidden.assert_called_once_with([str(flux_path), "/noshow"])
+        run_hidden.assert_not_called()
 
     def test_windows_startup_approved_enabled_value(self):
         self.assertEqual(app.WINDOWS_STARTUP_APPROVED_ENABLED[:4], bytes([0x02, 0, 0, 0]))

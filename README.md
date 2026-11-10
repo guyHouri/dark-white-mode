@@ -40,13 +40,13 @@ Send the AI this repository URL and say: **“Install the latest release and fol
 
 ## Notes
 
-- Chrome must be closed before the flag file can be changed reliably. By default, the app closes Chrome automatically, force-closes background Chrome processes if needed, updates the flag, sets each Chrome profile to continue where it left off, suppresses Chrome's crash-restore bubble where supported, and reopens Chrome.
+- Chrome must be closed before the flag file can be changed reliably. When the app closes a running Chrome instance, reopening it with session restore is a safety invariant rather than an optional setting: the app updates the flag, sets every Chrome profile to continue where it left off, suppresses the crash-restore bubble where supported, and immediately reopens Chrome.
 - Closing or minimizing the window keeps the app running in the Windows system tray or hidden-icons overflow menu. Use the tray menu's Quit action to fully exit.
-- Startup is enabled by default. On Windows the app registers a per-user Task Scheduler logon task, which is more reliable than the basic Startup Apps Run key. On macOS it writes a per-user LaunchAgent. The app opens visibly by default; enable "Start minimized to tray" to launch it hidden with `--startup`.
+- Startup is enabled by default. On Windows the app uses the standard per-user Startup Apps Run entry and removes the legacy Task Scheduler entry, which can be blocked by Windows Application Control for unsigned per-user builds. On macOS it writes a per-user LaunchAgent. The app opens visibly by default; enable "Start minimized to tray" to launch it hidden with `--startup`.
 - Brightness control depends on the display. Windows uses WMI and DDC/CI where supported. macOS uses the built-in DisplayServices interface first and can fall back to the optional Homebrew `brightness` tool for displays that need it.
 - Outside battery optimization is Windows-only. Switching to Night or Work Indoors restores the Balanced power scheme and a 100% CPU maximum processor state. Lenovo battery charge thresholds, Conservation Mode, and Rapid Charge still need to be managed in Lenovo Commercial Vantage.
-- PWM-safe software dimming is off by default. It stores the current gamma/LUT tables before dimming, restores them before each mode change, and restores them again when the app quits or the Python process exits. Because f.lux, HDR, Night light, True Tone, graphics drivers, and calibration tools can also own the gamma/LUT pipeline, the app reapplies software dimming after f.lux changes and may show a warning if the OS or driver rejects gamma changes.
-- f.lux does not provide a stable public command-line preset API. Windows uses the per-user f.lux preference registry values: `Outdoor`, `Indoor`, and `Late`. macOS f.lux Kelvin switching is not supported yet.
+- PWM-safe software dimming is off by default. It stores the current gamma/LUT tables before dimming, restores them before each mode change, and restores them again when the app quits or the Python process exits. On startup it reapplies the saved profile's f.lux and dimming effects without restarting Chrome. Because f.lux, HDR, Night light, True Tone, graphics drivers, and calibration tools can also own the gamma/LUT pipeline, the app may show a warning if the OS or driver rejects gamma changes.
+- f.lux does not provide a stable public command-line preset API. Windows uses the per-user f.lux preference registry values: `Outdoor`, `Indoor`, and `Late`, then asks the existing single-instance process to reload them without killing it. macOS f.lux Kelvin switching is not supported yet.
 - The app works per desktop user and normally does not need administrator rights.
 
 ## macOS
@@ -67,7 +67,7 @@ From this folder:
 .\build.ps1
 ```
 
-To build, install the packaged executable for the current Windows user, repair the startup task and Start Menu shortcut, and launch it:
+To build, install the packaged executable for the current Windows user, repair the Startup Apps entry and Start Menu shortcut, remove the legacy scheduled task, and launch it:
 
 ```powershell
 .\build.ps1 -Install

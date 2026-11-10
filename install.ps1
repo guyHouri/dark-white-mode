@@ -33,25 +33,27 @@ if (Test-Path -LiteralPath $configPath) {
     }
 }
 
+$runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+$startupApprovedKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
+New-Item -Path $runKey -Force | Out-Null
+New-Item -Path $startupApprovedKey -Force | Out-Null
 if ($startWithWindows) {
-    $actionParameters = @{
-        Execute = $installedPath
-        WorkingDirectory = $installDirectory
-    }
+    $runCommand = '"' + $installedPath + '"'
     if ($startMinimized) {
-        $actionParameters.Argument = "--startup"
+        $runCommand += " --startup"
     }
-    $action = New-ScheduledTaskAction @actionParameters
-    $trigger = New-ScheduledTaskTrigger -AtLogOn -User ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)
-    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
-    $principal = New-ScheduledTaskPrincipal -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
-    Register-ScheduledTask -TaskName $appName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
+    New-ItemProperty -Path $runKey -Name $appName -PropertyType String -Value $runCommand -Force | Out-Null
+    [byte[]]$startupEnabled = 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+    New-ItemProperty -Path $startupApprovedKey -Name $appName -PropertyType Binary -Value $startupEnabled -Force | Out-Null
 } else {
-    Unregister-ScheduledTask -TaskName $appName -Confirm:$false -ErrorAction SilentlyContinue
+    Remove-ItemProperty -Path $runKey -Name $appName -ErrorAction SilentlyContinue
+    Remove-ItemProperty -Path $startupApprovedKey -Name $appName -ErrorAction SilentlyContinue
 }
 
-$runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-Remove-ItemProperty -Path $runKey -Name $appName -ErrorAction SilentlyContinue
+# Older releases used Task Scheduler. Windows Application Control can reject an
+# unsigned per-user executable when Task Scheduler launches it, so remove that
+# legacy task and use the standard per-user Run entry above instead.
+Unregister-ScheduledTask -TaskName $appName -Confirm:$false -ErrorAction SilentlyContinue
 
 $startMenuDirectory = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
 $shortcutPath = Join-Path $startMenuDirectory "$appName.lnk"
@@ -64,7 +66,8 @@ $shortcut.Description = "Switch between Night, Outside, and Work Indoors display
 $shortcut.Save()
 
 Write-Host "Installed: $installedPath"
-Write-Host "Startup task: $(if ($startWithWindows) { 'enabled' } else { 'disabled' })"
+Write-Host "Startup Run entry: $(if ($startWithWindows) { 'enabled' } else { 'disabled' })"
+Write-Host "Legacy startup task: removed"
 Write-Host "Start Menu shortcut: $shortcutPath"
 
 if ($Launch) {

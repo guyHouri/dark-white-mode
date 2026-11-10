@@ -19,7 +19,7 @@ Invoke-Checked { python -m unittest discover -s tests -v }
 $iconPath = Join-Path $PWD "assets\dark-white-mode.ico"
 Invoke-Checked { python .\dark_white_mode.py --make-icon $iconPath }
 Invoke-Checked {
-    python -m PyInstaller --noconfirm --clean --onefile --windowed --icon $iconPath --name dark-white-mode dark_white_mode.py
+    python -m PyInstaller --noconfirm --clean --onefile --windowed --icon $iconPath --version-file assets\windows-version-info.txt --name dark-white-mode dark_white_mode.py
 }
 
 Write-Host ""

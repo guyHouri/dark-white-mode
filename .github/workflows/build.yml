@@ -45,6 +45,10 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
+      - name: Verify release tag matches application version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: python -c "import dark_white_mode as app, os; actual=os.environ['GITHUB_REF_NAME']; expected=f'v{app.APP_VERSION}'; assert actual == expected, f'{actual} does not match {expected}'"
+
       - name: Run tests
         run: python -m unittest discover -s tests -v
 
@@ -56,7 +60,16 @@ jobs:
         shell: pwsh
         run: |
           python dark_white_mode.py --make-icon assets/dark-white-mode.ico
-          python -m PyInstaller --noconfirm --clean --onefile --windowed --icon assets/dark-white-mode.ico --name dark-white-mode dark_white_mode.py
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --icon assets/dark-white-mode.ico --version-file assets/windows-version-info.txt --name dark-white-mode dark_white_mode.py
+          $expectedVersion = python -c "import dark_white_mode as app; print(app.APP_VERSION)"
+          $versionInfo = (Get-Item dist/dark-white-mode.exe).VersionInfo
+          if ($versionInfo.FileVersion -ne $expectedVersion -or $versionInfo.ProductVersion -ne $expectedVersion) {
+            throw "Packaged version does not match $expectedVersion"
+          }
+          $selfTest = Start-Process -FilePath dist/dark-white-mode.exe -ArgumentList "--self-test" -WindowStyle Hidden -Wait -PassThru
+          if ($selfTest.ExitCode -ne 0) {
+            throw "Packaged self-test failed with exit code $($selfTest.ExitCode)"
+          }
           $hash = (Get-FileHash dist/dark-white-mode.exe -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  dark-white-mode.exe" | Set-Content -Encoding ascii dist/dark-white-mode.exe.sha256
 
@@ -88,6 +101,11 @@ jobs:
             --icon assets/dark-white-mode.icns \
             --osx-bundle-identifier com.guyhouri.dark-white-mode \
             dark_white_mode.py
+          app_version="$(python -c 'import dark_white_mode as app; print(app.APP_VERSION)')"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $app_version" dist/dark-white-mode.app/Contents/Info.plist 2>/dev/null || \
+            /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $app_version" dist/dark-white-mode.app/Contents/Info.plist
+          /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $app_version" dist/dark-white-mode.app/Contents/Info.plist 2>/dev/null || \
+            /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $app_version" dist/dark-white-mode.app/Contents/Info.plist
           icon_name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' dist/dark-white-mode.app/Contents/Info.plist)"
           test -n "$icon_name"
           test -f "dist/dark-white-mode.app/Contents/Resources/$icon_name"

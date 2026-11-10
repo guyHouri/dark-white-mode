@@ -32,6 +32,7 @@ except ImportError:
 
 
 APP_NAME = "dark-white-mode"
+APP_VERSION = "0.11.0"
 CREDIT_TEXT = "Credits: Guy Houri"
 APP_USER_MODEL_ID = "GuyHouri.dark-white-mode"
 IS_WINDOWS = sys.platform == "win32"
@@ -120,7 +121,7 @@ PROFILE_ALIASES = {
 
 
 DEFAULT_CONFIG = {
-    "config_version": 9,
+    "config_version": 10,
     "start_with_windows": True,
     "start_minimized_to_tray": False,
     "app_window_theme": True,
@@ -270,6 +271,11 @@ def merge_config_data(data: dict) -> dict:
         merged["software_dimming"] = False
     if config_version < 9:
         merged["start_minimized_to_tray"] = False
+    # Closing a running browser is destructive unless the app immediately
+    # reopens it and requests session restore. Keep these legacy settings in
+    # the config for compatibility, but make the safe behavior unconditional.
+    merged["reopen_chrome_after_flag"] = True
+    merged["restore_chrome_pages"] = True
     if "current_profile" not in data:
         merged["current_profile"] = profile_from_legacy_mode(data.get("last_mode", data.get("app_theme", "white")))
         if bool(merged.get("app_window_theme", True)):
@@ -388,13 +394,6 @@ def startup_registry_command(minimized_to_tray: bool = True) -> str:
     return build_startup_command(app_launch_command_parts(), minimized_to_tray)
 
 
-def startup_task_argument_string(command_parts: list[str], minimized_to_tray: bool = True) -> str:
-    arguments = [quote_command_part(part) for part in command_parts[1:]]
-    if minimized_to_tray:
-        arguments.append("--startup")
-    return " ".join(arguments)
-
-
 def macos_launch_agent_label() -> str:
     return "com.guyhouri.dark-white-mode"
 
@@ -433,66 +432,55 @@ def set_windows_startup_approved(enabled: bool) -> None:
             pass
 
 
-def clear_windows_run_startup() -> None:
+def set_windows_run_startup(enabled: bool, minimized_to_tray: bool = True) -> None:
     if not IS_WINDOWS or winreg is None:
-        return
+        raise RuntimeError("Windows startup is only available on Windows.")
     key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
     with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
-        try:
-            winreg.DeleteValue(key, APP_NAME)
-        except FileNotFoundError:
-            pass
-    set_windows_startup_approved(False)
+        if enabled:
+            winreg.SetValueEx(
+                key,
+                APP_NAME,
+                0,
+                winreg.REG_SZ,
+                startup_registry_command(minimized_to_tray),
+            )
+        else:
+            try:
+                winreg.DeleteValue(key, APP_NAME)
+            except FileNotFoundError:
+                pass
+    set_windows_startup_approved(enabled)
 
 
-def build_windows_startup_task_script(enabled: bool, command_parts: list[str], minimized_to_tray: bool = True) -> str:
-    payload = {
-        "enabled": bool(enabled),
-        "task_name": APP_NAME,
-        "executable": str(command_parts[0]),
-        "arguments": startup_task_argument_string(command_parts, minimized_to_tray),
-        "working_directory": shortcut_working_directory(command_parts),
-    }
-    payload_json = json.dumps(payload)
-    return f"""
-$data = @'
-{payload_json}
-'@ | ConvertFrom-Json
-$taskName = $data.task_name
-if ($data.enabled) {{
-    $user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-    $action = New-ScheduledTaskAction -Execute $data.executable -Argument $data.arguments -WorkingDirectory $data.working_directory
-    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
-    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
-    $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
-    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
-}} else {{
-    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
-}}
-"""
-
-
-def set_windows_startup_task(enabled: bool, minimized_to_tray: bool = True) -> StepResult:
-    script = build_windows_startup_task_script(enabled, app_launch_command_parts(), minimized_to_tray)
+def remove_legacy_windows_startup_task() -> StepResult:
+    task_name = json.dumps(APP_NAME)
+    script = f"Unregister-ScheduledTask -TaskName {task_name} -Confirm:$false -ErrorAction SilentlyContinue"
     completed = run_hidden(
         ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
         timeout=20,
     )
     if completed.returncode == 0:
-        message = "Enabled Windows startup scheduled task." if enabled else "Disabled Windows startup scheduled task."
-        return StepResult("Startup", True, message)
+        return StepResult("Startup", True, "Removed the legacy Windows startup scheduled task.")
     message = (completed.stderr or completed.stdout or "").strip()
-    return StepResult("Startup", False, "Windows startup scheduled task update failed. " + message)
+    return StepResult("Startup", False, "Legacy Windows startup scheduled task cleanup failed. " + message)
 
 
 def set_windows_startup(enabled: bool, minimized_to_tray: bool = True) -> StepResult:
     if not IS_WINDOWS or winreg is None:
         return StepResult("Startup", False, "Windows startup is only available on Windows.")
     try:
-        result = set_windows_startup_task(enabled, minimized_to_tray)
-        if result.ok:
-            clear_windows_run_startup()
-        return result
+        set_windows_run_startup(enabled, minimized_to_tray)
+        legacy_task_result = remove_legacy_windows_startup_task()
+        if not legacy_task_result.ok:
+            return StepResult(
+                "Startup",
+                False,
+                "Windows startup registry was updated, but the blocked legacy scheduled task could not be removed. "
+                + legacy_task_result.message,
+            )
+        message = "Enabled Windows startup Run entry." if enabled else "Disabled Windows startup Run entry."
+        return StepResult("Startup", True, message + " Removed the legacy scheduled task.")
     except Exception as exc:
         return StepResult("Startup", False, f"Windows startup update failed: {exc}")
 
@@ -769,6 +757,24 @@ def wait_for_process_exit(image_name: str, timeout_seconds: int) -> bool:
             return True
         time.sleep(0.4)
     return not is_process_running(image_name)
+
+
+def wait_for_process_start(image_name: str, timeout_seconds: int) -> bool:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        if is_process_running(image_name):
+            return True
+        time.sleep(0.25)
+    return is_process_running(image_name)
+
+
+def process_stays_running(image_name: str, observation_seconds: float) -> bool:
+    deadline = time.time() + observation_seconds
+    while time.time() < deadline:
+        if not is_process_running(image_name):
+            return False
+        time.sleep(0.25)
+    return is_process_running(image_name)
 
 
 def close_chrome_for_flag() -> StepResult:
@@ -1803,14 +1809,30 @@ def set_flux_kelvin(kelvin: int) -> StepResult:
     if not flux_exe:
         return StepResult("f.lux", True, f"f.lux set to {kelvin}K, but flux.exe was not found to restart it.")
 
+    was_running = is_process_running("flux.exe")
     try:
-        if is_process_running("flux.exe"):
-            run_hidden(["taskkill", "/IM", "flux.exe", "/F"], timeout=8)
-            time.sleep(0.4)
+        # f.lux is single-instance. Launching it again asks the existing process
+        # to reload its registry preferences, so there is no reason to kill the
+        # healthy process and risk leaving the user without color control.
         popen_hidden([str(flux_exe), "/noshow"])
-        return StepResult("f.lux", True, f"f.lux set to {kelvin}K and restarted.")
+        if not wait_for_process_start("flux.exe", 6):
+            return StepResult("f.lux", False, f"f.lux set to {kelvin}K, but flux.exe did not start.")
+        if not process_stays_running("flux.exe", 2):
+            return StepResult("f.lux", False, f"f.lux set to {kelvin}K, but flux.exe exited immediately.")
+        action = "refreshed without stopping the running process" if was_running else "started and verified"
+        return StepResult("f.lux", True, f"f.lux set to {kelvin}K, {action}.")
     except Exception as exc:
-        return StepResult("f.lux", False, f"f.lux set to {kelvin}K, but restart failed: {exc}")
+        return StepResult("f.lux", False, f"f.lux set to {kelvin}K, but refresh failed: {exc}")
+
+
+def apply_profile_color_effects(profile_id: str, settings: dict) -> list[StepResult]:
+    profile_id = normalize_profile_id(profile_id)
+    results = []
+    if settings.get("flux"):
+        results.append(set_flux_kelvin(profile_flux_kelvin(profile_id, settings)))
+    if settings.get("software_dimming"):
+        results.append(set_software_dimming(profile_software_dimming(profile_id, settings)))
+    return results
 
 
 class DarkWhiteModeApp(tk.Tk):
@@ -1825,7 +1847,7 @@ class DarkWhiteModeApp(tk.Tk):
         super().__init__()
         self.app_icon_photo = None
         self.apply_window_icon()
-        self.title(APP_NAME)
+        self.title(f"{APP_NAME} {APP_VERSION}")
         self.geometry("560x980")
         self.minsize(540, 860)
         self.config_data = merge_config_data(config_data) if config_data is not None else load_config()
@@ -1852,6 +1874,7 @@ class DarkWhiteModeApp(tk.Tk):
         self.after(100, self._drain_ui_queue)
         self.after(500, self.start_tray_icon)
         self.after(900, self._maybe_hide_startup_window)
+        self.after(1200, self._restore_startup_color_effects)
 
     def _build_ui(self):
         self.columnconfigure(0, weight=1)
@@ -1871,7 +1894,7 @@ class DarkWhiteModeApp(tk.Tk):
         root.grid(row=0, column=0, sticky="nsew")
         root.columnconfigure(0, weight=1)
 
-        ttk.Label(root, text=APP_NAME, style="Title.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(root, text=f"{APP_NAME} {APP_VERSION}", style="Title.TLabel").grid(row=0, column=0, sticky="w")
         self.mode_label = ttk.Label(root, text="", style="Mode.TLabel")
         self.mode_label.grid(row=1, column=0, sticky="w", pady=(4, 16))
 
@@ -1972,25 +1995,9 @@ class DarkWhiteModeApp(tk.Tk):
             variable=chrome_var,
         ).grid(row=9, column=0, sticky="w", pady=(0, 12))
 
-        reopen_chrome_var = tk.BooleanVar(value=bool(self.config_data["reopen_chrome_after_flag"]))
-        self.vars["reopen_chrome_after_flag"] = reopen_chrome_var
-        ttk.Checkbutton(
-            root,
-            text="Reopen Chrome after updating flag",
-            variable=reopen_chrome_var,
-        ).grid(row=10, column=0, sticky="w", pady=(0, 12))
-
-        restore_chrome_var = tk.BooleanVar(value=bool(self.config_data["restore_chrome_pages"]))
-        self.vars["restore_chrome_pages"] = restore_chrome_var
-        ttk.Checkbutton(
-            root,
-            text="Restore Chrome pages automatically",
-            variable=restore_chrome_var,
-        ).grid(row=11, column=0, sticky="w", pady=(0, 12))
-
         status_frame = ttk.LabelFrame(root, text="Status", padding=8)
-        status_frame.grid(row=12, column=0, sticky="nsew")
-        root.rowconfigure(12, weight=1)
+        status_frame.grid(row=10, column=0, sticky="nsew")
+        root.rowconfigure(10, weight=1)
         status_frame.columnconfigure(0, weight=1)
         status_frame.rowconfigure(0, weight=1)
 
@@ -2006,7 +2013,7 @@ class DarkWhiteModeApp(tk.Tk):
         scrollbar = ttk.Scrollbar(status_frame, orient="vertical", command=self.status_text.yview)
         scrollbar.grid(row=0, column=1, sticky="ns")
         self.status_text.configure(yscrollcommand=scrollbar.set)
-        ttk.Label(root, text=CREDIT_TEXT).grid(row=13, column=0, sticky="w", pady=(10, 0))
+        ttk.Label(root, text=CREDIT_TEXT).grid(row=11, column=0, sticky="w", pady=(10, 0))
         self.apply_app_theme()
         self.log("Ready.")
 
@@ -2260,6 +2267,31 @@ class DarkWhiteModeApp(tk.Tk):
             return
         self.hide_to_tray()
 
+    def _restore_startup_color_effects(self):
+        if self.quitting or self.running:
+            return
+        settings = dict(self.config_data)
+        if not settings.get("software_dimming"):
+            return
+        target_profile = normalize_profile_id(settings.get("current_profile"))
+        if profile_software_dimming(target_profile, settings) >= MAX_SOFTWARE_DIMMING_PERCENT:
+            return
+
+        self._set_busy_state(True, target_profile)
+        self.log("")
+        self.log(f"Reapplying {profile_label(target_profile)} color effects after startup...")
+        thread = threading.Thread(
+            target=self._restore_startup_color_effects_in_thread,
+            args=(target_profile, settings),
+            daemon=True,
+        )
+        thread.start()
+        self.after(100, self._check_result_queue)
+
+    def _restore_startup_color_effects_in_thread(self, target_profile: str, settings: dict):
+        results = apply_profile_color_effects(target_profile, settings)
+        self.result_queue.put((target_profile, results))
+
     def sync_startup_setting(self, log_result: bool = True):
         if "start_with_windows" in self.vars:
             self.config_data["start_with_windows"] = bool(self.vars["start_with_windows"].get())
@@ -2376,10 +2408,10 @@ class DarkWhiteModeApp(tk.Tk):
             "software_dimming",
             "flux",
             "prompt_before_closing_chrome",
-            "reopen_chrome_after_flag",
-            "restore_chrome_pages",
         ):
             settings[key] = bool(self.vars[key].get())
+        settings["reopen_chrome_after_flag"] = True
+        settings["restore_chrome_pages"] = True
         for profile_id, profile in PROFILE_DEFINITIONS.items():
             settings[profile["brightness_key"]] = clamp_int(
                 self.vars[profile["brightness_key"]].get(),
@@ -2433,8 +2465,8 @@ class DarkWhiteModeApp(tk.Tk):
                 self.log("Chrome will close while the mode changes.")
                 settings = dict(settings)
                 settings["_close_chrome_for_flag"] = True
-                settings["_reopen_chrome_after_flag"] = settings["reopen_chrome_after_flag"]
-                settings["_restore_chrome_pages"] = settings["restore_chrome_pages"]
+                settings["_reopen_chrome_after_flag"] = True
+                settings["_restore_chrome_pages"] = True
 
         self._set_busy_state(True, target_profile)
         self.log("")
@@ -2476,16 +2508,11 @@ class DarkWhiteModeApp(tk.Tk):
                 results.append(
                     set_chrome_force_dark(
                         target_dark,
-                        bool(settings.get("_reopen_chrome_after_flag")),
-                        bool(settings.get("_restore_chrome_pages", settings.get("restore_chrome_pages", True))),
+                        bool(settings.get("_close_chrome_for_flag")),
+                        True,
                     )
                 )
-        if settings["flux"]:
-            kelvin = profile_flux_kelvin(target_profile, settings)
-            results.append(set_flux_kelvin(kelvin))
-        if settings.get("software_dimming"):
-            percent = profile_software_dimming(target_profile, settings)
-            results.append(set_software_dimming(percent))
+        results.extend(apply_profile_color_effects(target_profile, settings))
         self.result_queue.put((target_profile, results))
 
     def _check_result_queue(self):
@@ -2527,6 +2554,7 @@ def self_test() -> int:
     assert build_dimmed_gamma_ramp_values([0, 1000, 65535], 25) == [0, 250, 16384]
     assert build_dimmed_gamma_table_values([0.0, 0.5, 1.0], 25) == [0.0, 0.125, 0.25]
     assert parse_flux_run_value(r'"C:\Users\me\AppData\Local\FluxSoftware\Flux\flux.exe" /noshow')
+    assert APP_VERSION == "0.11.0"
     assert "reopen_chrome_after_flag" in load_config()
     assert "restore_chrome_pages" in load_config()
     assert "battery_optimization" in load_config()
@@ -2652,6 +2680,8 @@ def macos_runtime_smoke_test() -> int:
     checks["app_icon_generated"] = create_icon_image(256) is not None
     checks["bundle_identifier"] = None
     checks["bundle_icon_present"] = False
+    checks["bundle_short_version"] = None
+    checks["bundle_version"] = None
     if getattr(sys, "frozen", False):
         try:
             bundle_root = Path(sys.executable).resolve().parents[2]
@@ -2663,6 +2693,8 @@ def macos_runtime_smoke_test() -> int:
                 icon_candidates.append(bundle_root / "Contents" / "Resources" / f"{icon_name}.icns")
             checks["bundle_identifier"] = info.get("CFBundleIdentifier")
             checks["bundle_icon_present"] = bool(icon_name) and any(path.is_file() for path in icon_candidates)
+            checks["bundle_short_version"] = info.get("CFBundleShortVersionString")
+            checks["bundle_version"] = info.get("CFBundleVersion")
         except Exception as exc:
             result["warnings"].append(f"App bundle validation failed: {exc}")
 
@@ -2674,6 +2706,8 @@ def macos_runtime_smoke_test() -> int:
         checks.get("app_icon_generated") is True,
         checks.get("bundle_identifier") == "com.guyhouri.dark-white-mode",
         checks.get("bundle_icon_present") is True,
+        checks.get("bundle_short_version") == APP_VERSION,
+        checks.get("bundle_version") == APP_VERSION,
     )
     result["ok"] = all(required_checks)
     write_smoke_result(result)
@@ -2710,7 +2744,7 @@ def macos_gui_smoke_test() -> int:
         result["ok"] = (
             checks["window_exists"]
             and checks["window_visible"]
-            and checks["window_title"] == APP_NAME
+            and checks["window_title"] == f"{APP_NAME} {APP_VERSION}"
             and checks["tray_started"]
             and checks["tray_visible"]
         )
