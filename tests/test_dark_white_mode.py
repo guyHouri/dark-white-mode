@@ -404,32 +404,54 @@ class MiscTests(unittest.TestCase):
         external = [(r"\\.\DISPLAY1", [0, 30000, 65535])]
         dimmer._original_ramps = [(r"\\.\DISPLAY1", [0, 25000, 60000])]
         dimmer._percent = 25
-        dimmer._expected_dimmed_ramps = app.build_dimmed_display_gamma_ramps(dimmer._original_ramps, 25)
 
-        with (
-            mock.patch.object(app, "read_display_gamma_ramps", return_value=(external, [])),
-            mock.patch.object(app, "write_display_gamma_ramps", return_value=(1, [])) as write_gamma,
-        ):
-            repaired = dimmer._repair_external_gamma_change_locked()
+        with mock.patch.object(app, "IS_MAC", False):
+            dimmer._expected_dimmed_ramps = app.build_dimmed_display_gamma_ramps(dimmer._original_ramps, 25)
+            with (
+                mock.patch.object(app, "read_display_gamma_ramps", return_value=(external, [])),
+                mock.patch.object(app, "write_display_gamma_ramps", return_value=(1, [])) as write_gamma,
+            ):
+                repaired = dimmer._repair_external_gamma_change_locked()
+                expected_write = app.build_dimmed_display_gamma_ramps(external, 25)
 
         self.assertTrue(repaired)
         self.assertEqual(dimmer._original_ramps, external)
-        write_gamma.assert_called_once_with(app.build_dimmed_display_gamma_ramps(external, 25))
+        write_gamma.assert_called_once_with(expected_write)
 
     def test_gamma_monitor_does_not_compound_an_already_dimmed_curve(self):
         dimmer = app.SoftwareGammaDimmer()
         dimmer._original_ramps = [(r"\\.\DISPLAY1", [0, 30000, 65535])]
         dimmer._percent = 25
-        dimmer._expected_dimmed_ramps = app.build_dimmed_display_gamma_ramps(dimmer._original_ramps, 25)
 
-        with (
-            mock.patch.object(app, "read_display_gamma_ramps", return_value=(dimmer._expected_dimmed_ramps, [])),
-            mock.patch.object(app, "write_display_gamma_ramps") as write_gamma,
-        ):
-            repaired = dimmer._repair_external_gamma_change_locked()
+        with mock.patch.object(app, "IS_MAC", False):
+            dimmer._expected_dimmed_ramps = app.build_dimmed_display_gamma_ramps(dimmer._original_ramps, 25)
+            with (
+                mock.patch.object(app, "read_display_gamma_ramps", return_value=(dimmer._expected_dimmed_ramps, [])),
+                mock.patch.object(app, "write_display_gamma_ramps") as write_gamma,
+            ):
+                repaired = dimmer._repair_external_gamma_change_locked()
 
         self.assertFalse(repaired)
         write_gamma.assert_not_called()
+
+    def test_gamma_monitor_repairs_macos_float_tables(self):
+        dimmer = app.SoftwareGammaDimmer()
+        external = [(42, [0.0, 1.0], [0.0, 0.5], [0.0, 0.25])]
+        dimmer._original_ramps = [(42, [0.0, 0.9], [0.0, 0.4], [0.0, 0.2])]
+        dimmer._percent = 25
+
+        with mock.patch.object(app, "IS_MAC", True):
+            dimmer._expected_dimmed_ramps = app.build_dimmed_display_gamma_ramps(dimmer._original_ramps, 25)
+            with (
+                mock.patch.object(app, "read_display_gamma_ramps", return_value=(external, [])),
+                mock.patch.object(app, "write_display_gamma_ramps", return_value=(1, [])) as write_gamma,
+            ):
+                repaired = dimmer._repair_external_gamma_change_locked()
+                expected_write = app.build_dimmed_display_gamma_ramps(external, 25)
+
+        self.assertTrue(repaired)
+        self.assertEqual(dimmer._original_ramps, external)
+        write_gamma.assert_called_once_with(expected_write)
 
     def test_mode_change_loading_text_names_target_mode(self):
         self.assertEqual(app.mode_change_status_text(True), "Changing to Dark mode. Please wait...")
