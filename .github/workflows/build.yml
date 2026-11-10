@@ -106,6 +106,7 @@ jobs:
             /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $app_version" dist/dark-white-mode.app/Contents/Info.plist
           /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $app_version" dist/dark-white-mode.app/Contents/Info.plist 2>/dev/null || \
             /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $app_version" dist/dark-white-mode.app/Contents/Info.plist
+          codesign --force --deep --sign - dist/dark-white-mode.app
           icon_name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' dist/dark-white-mode.app/Contents/Info.plist)"
           test -n "$icon_name"
           test -f "dist/dark-white-mode.app/Contents/Resources/$icon_name"
