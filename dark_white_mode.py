@@ -32,7 +32,7 @@ except ImportError:
 
 
 APP_NAME = "dark-white-mode"
-APP_VERSION = "0.11.0"
+APP_VERSION = "0.11.1"
 CREDIT_TEXT = "Credits: Guy Houri"
 APP_USER_MODEL_ID = "GuyHouri.dark-white-mode"
 IS_WINDOWS = sys.platform == "win32"
@@ -1543,10 +1543,41 @@ def build_dimmed_display_gamma_ramps(ramps, percent: int):
     ]
 
 
+def gamma_ramps_match(first, second) -> bool:
+    if len(first) != len(second):
+        return False
+    tolerance = 0.004 if IS_MAC else 256
+    first_by_display = {entry[0]: [value for channel in entry[1:] for value in channel] for entry in first}
+    second_by_display = {entry[0]: [value for channel in entry[1:] for value in channel] for entry in second}
+    if first_by_display.keys() != second_by_display.keys():
+        return False
+    for display_id, first_values in first_by_display.items():
+        second_values = second_by_display[display_id]
+        if len(first_values) != len(second_values):
+            return False
+        if any(abs(first_value - second_value) > tolerance for first_value, second_value in zip(first_values, second_values)):
+            return False
+    return True
+
+
+def gamma_ramps_exceed_dimming_ceiling(ramps, percent: int) -> bool:
+    percent = normalize_software_dimming_percent(percent)
+    ceiling = (percent / 100) + 0.004 if IS_MAC else round(65535 * percent / 100) + 256
+    return any(
+        value > ceiling
+        for entry in ramps
+        for channel in entry[1:]
+        for value in channel
+    )
+
+
 class SoftwareGammaDimmer:
     def __init__(self):
         self._lock = threading.Lock()
         self._original_ramps = []
+        self._expected_dimmed_ramps = []
+        self._percent = MAX_SOFTWARE_DIMMING_PERCENT
+        self._monitor_generation = 0
 
     def is_active(self) -> bool:
         with self._lock:
@@ -1566,6 +1597,9 @@ class SoftwareGammaDimmer:
             dimmed = build_dimmed_display_gamma_ramps(self._original_ramps, percent)
             changed, errors = write_display_gamma_ramps(dimmed)
             if changed:
+                self._expected_dimmed_ramps = dimmed
+                self._percent = percent
+                self._start_monitor_locked()
                 message = f"Software dimming set to {percent}% on {changed} display(s)."
                 if errors:
                     message += " Some displays failed: " + " ".join(errors)
@@ -1574,11 +1608,40 @@ class SoftwareGammaDimmer:
             self._restore_locked()
             return StepResult("Software dimming", False, "Software dimming was not applied. " + " ".join(errors))
 
+    def _start_monitor_locked(self):
+        self._monitor_generation += 1
+        generation = self._monitor_generation
+        threading.Thread(target=self._monitor_loop, args=(generation,), daemon=True).start()
+
+    def _monitor_loop(self, generation: int):
+        while True:
+            time.sleep(1)
+            with self._lock:
+                if generation != self._monitor_generation or not self._original_ramps:
+                    return
+                self._repair_external_gamma_change_locked()
+
+    def _repair_external_gamma_change_locked(self) -> bool:
+        current, _errors = read_display_gamma_ramps()
+        if not current or gamma_ramps_match(current, self._expected_dimmed_ramps):
+            return False
+        if not gamma_ramps_exceed_dimming_ceiling(current, self._percent):
+            return False
+
+        dimmed = build_dimmed_display_gamma_ramps(current, self._percent)
+        changed, _errors = write_display_gamma_ramps(dimmed)
+        if not changed:
+            return False
+        self._original_ramps = current
+        self._expected_dimmed_ramps = dimmed
+        return True
+
     def restore(self) -> StepResult:
         with self._lock:
             return self._restore_locked()
 
     def _restore_locked(self) -> StepResult:
+        self._monitor_generation += 1
         if not self._original_ramps:
             return StepResult("Software dimming", True, "Software dimming is already restored.")
 
@@ -1586,6 +1649,8 @@ class SoftwareGammaDimmer:
         expected = len(self._original_ramps)
         if changed == expected:
             self._original_ramps = []
+            self._expected_dimmed_ramps = []
+            self._percent = MAX_SOFTWARE_DIMMING_PERCENT
             return StepResult("Software dimming", True, f"Software dimming restored on {changed} display(s).")
         if changed:
             return StepResult(
@@ -2554,7 +2619,7 @@ def self_test() -> int:
     assert build_dimmed_gamma_ramp_values([0, 1000, 65535], 25) == [0, 250, 16384]
     assert build_dimmed_gamma_table_values([0.0, 0.5, 1.0], 25) == [0.0, 0.125, 0.25]
     assert parse_flux_run_value(r'"C:\Users\me\AppData\Local\FluxSoftware\Flux\flux.exe" /noshow')
-    assert APP_VERSION == "0.11.0"
+    assert APP_VERSION == "0.11.1"
     assert "reopen_chrome_after_flag" in load_config()
     assert "restore_chrome_pages" in load_config()
     assert "battery_optimization" in load_config()

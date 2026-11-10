@@ -395,9 +395,41 @@ class MiscTests(unittest.TestCase):
     def test_release_version_metadata_matches_application_version(self):
         version_info = (Path(__file__).parents[1] / "assets" / "windows-version-info.txt").read_text(encoding="utf-8")
 
-        self.assertEqual(app.APP_VERSION, "0.11.0")
-        self.assertIn("StringStruct('FileVersion', '0.11.0')", version_info)
-        self.assertIn("filevers=(0, 11, 0, 0)", version_info)
+        self.assertEqual(app.APP_VERSION, "0.11.1")
+        self.assertIn("StringStruct('FileVersion', '0.11.1')", version_info)
+        self.assertIn("filevers=(0, 11, 1, 0)", version_info)
+
+    def test_gamma_monitor_repairs_external_full_strength_overwrite(self):
+        dimmer = app.SoftwareGammaDimmer()
+        external = [(r"\\.\DISPLAY1", [0, 30000, 65535])]
+        dimmer._original_ramps = [(r"\\.\DISPLAY1", [0, 25000, 60000])]
+        dimmer._percent = 25
+        dimmer._expected_dimmed_ramps = app.build_dimmed_display_gamma_ramps(dimmer._original_ramps, 25)
+
+        with (
+            mock.patch.object(app, "read_display_gamma_ramps", return_value=(external, [])),
+            mock.patch.object(app, "write_display_gamma_ramps", return_value=(1, [])) as write_gamma,
+        ):
+            repaired = dimmer._repair_external_gamma_change_locked()
+
+        self.assertTrue(repaired)
+        self.assertEqual(dimmer._original_ramps, external)
+        write_gamma.assert_called_once_with(app.build_dimmed_display_gamma_ramps(external, 25))
+
+    def test_gamma_monitor_does_not_compound_an_already_dimmed_curve(self):
+        dimmer = app.SoftwareGammaDimmer()
+        dimmer._original_ramps = [(r"\\.\DISPLAY1", [0, 30000, 65535])]
+        dimmer._percent = 25
+        dimmer._expected_dimmed_ramps = app.build_dimmed_display_gamma_ramps(dimmer._original_ramps, 25)
+
+        with (
+            mock.patch.object(app, "read_display_gamma_ramps", return_value=(dimmer._expected_dimmed_ramps, [])),
+            mock.patch.object(app, "write_display_gamma_ramps") as write_gamma,
+        ):
+            repaired = dimmer._repair_external_gamma_change_locked()
+
+        self.assertFalse(repaired)
+        write_gamma.assert_not_called()
 
     def test_mode_change_loading_text_names_target_mode(self):
         self.assertEqual(app.mode_change_status_text(True), "Changing to Dark mode. Please wait...")
