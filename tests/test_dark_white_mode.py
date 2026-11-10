@@ -395,9 +395,65 @@ class MiscTests(unittest.TestCase):
     def test_release_version_metadata_matches_application_version(self):
         version_info = (Path(__file__).parents[1] / "assets" / "windows-version-info.txt").read_text(encoding="utf-8")
 
-        self.assertEqual(app.APP_VERSION, "0.11.1")
-        self.assertIn("StringStruct('FileVersion', '0.11.1')", version_info)
-        self.assertIn("filevers=(0, 11, 1, 0)", version_info)
+        self.assertEqual(app.APP_VERSION, "0.12.0")
+        self.assertIn("StringStruct('FileVersion', '0.12.0')", version_info)
+        self.assertIn("filevers=(0, 12, 0, 0)", version_info)
+
+    def test_software_dimming_slider_helpers(self):
+        self.assertEqual(app.software_dimming_slider_percent(24.6), 25)
+        self.assertEqual(app.software_dimming_slider_percent("74.4"), 74)
+        self.assertEqual(app.software_dimming_slider_percent("bad"), 100)
+        self.assertEqual(app.software_dimming_slider_percent(0), 5)
+        self.assertEqual(app.software_dimming_slider_percent(120), 100)
+        self.assertEqual(app.format_software_dimming_percent(25), "25%")
+        self.assertEqual(app.format_software_dimming_percent(100), "100% (off)")
+        self.assertEqual(app.profile_id_for_software_dimming_key("night_software_dimming"), "night")
+        self.assertEqual(app.profile_id_for_software_dimming_key("outside_software_dimming"), "outside")
+        self.assertEqual(app.profile_id_for_software_dimming_key("indoor_software_dimming"), "work_indoors")
+        self.assertIsNone(app.profile_id_for_software_dimming_key("missing"))
+
+    def test_active_profile_slider_saves_and_schedules_live_preview(self):
+        class Variable:
+            def __init__(self, value):
+                self.value = value
+
+            def get(self):
+                return self.value
+
+            def set(self, value):
+                self.value = value
+
+        scheduled = []
+        runner = type(
+            "Runner",
+            (),
+            {
+                "vars": {
+                    "night_software_dimming": Variable(42.6),
+                    "software_dimming": Variable(True),
+                },
+                "config_data": dict(app.DEFAULT_CONFIG),
+                "current_profile": "night",
+                "running": False,
+                "dimming_preview_generation": 0,
+                "dimming_preview_after_id": None,
+                "log": lambda self, message: None,
+                "after": lambda self, delay, callback: scheduled.append((delay, callback)) or "timer-1",
+                "after_cancel": lambda self, timer_id: None,
+            },
+        )()
+        label = Variable("")
+
+        with mock.patch.object(app, "save_config") as save_config:
+            app.DarkWhiteModeApp._commit_dimming_slider(runner, "night_software_dimming", label)
+
+        self.assertEqual(runner.vars["night_software_dimming"].get(), 43)
+        self.assertEqual(label.get(), "43%")
+        self.assertEqual(runner.config_data["night_software_dimming"], 43)
+        self.assertEqual(runner.dimming_preview_generation, 1)
+        self.assertEqual(runner.dimming_preview_after_id, "timer-1")
+        self.assertEqual(scheduled[0][0], 150)
+        save_config.assert_called_once_with(runner.config_data)
 
     def test_gamma_monitor_repairs_external_full_strength_overwrite(self):
         dimmer = app.SoftwareGammaDimmer()

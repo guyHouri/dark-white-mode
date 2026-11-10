@@ -32,7 +32,7 @@ except ImportError:
 
 
 APP_NAME = "dark-white-mode"
-APP_VERSION = "0.11.1"
+APP_VERSION = "0.12.0"
 CREDIT_TEXT = "Credits: Guy Houri"
 APP_USER_MODEL_ID = "GuyHouri.dark-white-mode"
 IS_WINDOWS = sys.platform == "win32"
@@ -1249,6 +1249,26 @@ def normalize_software_dimming_percent(value) -> int:
     return clamp_int(value, MIN_SOFTWARE_DIMMING_PERCENT, MAX_SOFTWARE_DIMMING_PERCENT, MAX_SOFTWARE_DIMMING_PERCENT)
 
 
+def software_dimming_slider_percent(value) -> int:
+    try:
+        rounded = round(float(value))
+    except (TypeError, ValueError):
+        return MAX_SOFTWARE_DIMMING_PERCENT
+    return normalize_software_dimming_percent(rounded)
+
+
+def format_software_dimming_percent(value) -> str:
+    percent = software_dimming_slider_percent(value)
+    return f"{percent}% (off)" if percent == MAX_SOFTWARE_DIMMING_PERCENT else f"{percent}%"
+
+
+def profile_id_for_software_dimming_key(key: str) -> str | None:
+    for profile_id, profile in PROFILE_DEFINITIONS.items():
+        if profile["software_dimming_key"] == key:
+            return profile_id
+    return None
+
+
 def build_dimmed_gamma_ramp_values(values: list[int], percent: int) -> list[int]:
     percent = normalize_software_dimming_percent(percent)
     factor = percent / 100
@@ -1920,6 +1940,10 @@ class DarkWhiteModeApp(tk.Tk):
         self.current_profile = normalize_profile_id(self.config_data.get("current_profile"))
         self.vars = {}
         self.profile_buttons = {}
+        self.dimming_sliders = {}
+        self.dimming_value_labels = {}
+        self.dimming_preview_after_id = None
+        self.dimming_preview_generation = 0
         self.running = False
         self.busy_target_profile = None
         self.quitting = False
@@ -1951,6 +1975,7 @@ class DarkWhiteModeApp(tk.Tk):
         self.style.configure("Title.TLabel", font=("Segoe UI", 18, "bold"))
         self.style.configure("Mode.TLabel", font=("Segoe UI", 11))
         self.style.configure("Busy.TLabel", font=("Segoe UI", 10, "bold"))
+        self.style.configure("Hint.TLabel", font=("Segoe UI", 9))
         self.style.configure("Big.TButton", font=("Segoe UI", 14, "bold"), padding=(18, 14))
         self.style.configure("Profile.TButton", font=("Segoe UI", 10, "bold"), padding=(10, 10))
         self.style.configure("ActiveProfile.TButton", font=("Segoe UI", 10, "bold"), padding=(10, 10))
@@ -2002,7 +2027,7 @@ class DarkWhiteModeApp(tk.Tk):
                 ("battery_optimization", "Outside battery optimization"),
                 ("chrome_force_dark", "Chrome force-dark flag"),
                 ("brightness", "Display brightness"),
-                ("software_dimming", "PWM-safe software dimming (experimental)"),
+                ("software_dimming", "Software dimming sliders (GPU, live preview)"),
                 ("flux", "f.lux color temperature"),
             ]
         ):
@@ -2014,20 +2039,23 @@ class DarkWhiteModeApp(tk.Tk):
         values.grid(row=6, column=0, sticky="ew", pady=(0, 12))
         values.columnconfigure(1, weight=1)
 
-        row = 0
+        ttk.Label(
+            values,
+            text="Software dimming: 100% = off  ·  5% = darkest  ·  active profile previews live",
+            style="Hint.TLabel",
+        ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 6))
+
+        row = 1
         for profile_id in PROFILE_ORDER:
             profile = PROFILE_DEFINITIONS[profile_id]
             label = profile["label"]
             self._add_spinbox(values, row, f"{label} brightness", profile["brightness_key"], 0, 100, "%")
             row += 1
-            self._add_spinbox(
+            self._add_dimming_slider(
                 values,
                 row,
                 f"{label} software dimming",
                 profile["software_dimming_key"],
-                5,
-                100,
-                "%",
             )
             row += 1
             self._add_spinbox(values, row, f"{label} f.lux", profile["flux_key"], 800, 10000, "K")
@@ -2095,6 +2123,7 @@ class DarkWhiteModeApp(tk.Tk):
             self.style.configure("Title.TLabel", background=colors["bg"], foreground=colors["text"])
             self.style.configure("Mode.TLabel", background=colors["bg"], foreground=colors["muted"])
             self.style.configure("Busy.TLabel", background=colors["bg"], foreground=colors["accent"])
+            self.style.configure("Hint.TLabel", background=colors["bg"], foreground=colors["muted"])
             self.style.configure(
                 "TLabelframe",
                 background=colors["bg"],
@@ -2173,6 +2202,14 @@ class DarkWhiteModeApp(tk.Tk):
                 foreground=colors["text"],
                 bordercolor=colors["border"],
                 arrowcolor=colors["text"],
+            )
+            self.style.configure(
+                "Horizontal.TScale",
+                background=colors["accent"],
+                troughcolor=colors["surface"],
+                bordercolor=colors["border"],
+                lightcolor=colors["accent"],
+                darkcolor=colors["accent"],
             )
             self.style.configure(
                 "Busy.Horizontal.TProgressbar",
@@ -2409,6 +2446,107 @@ class DarkWhiteModeApp(tk.Tk):
         spin.grid(row=row, column=1, sticky="w", padx=(12, 6), pady=4)
         ttk.Label(parent, text=suffix).grid(row=row, column=2, sticky="w", pady=4)
 
+    def _add_dimming_slider(self, parent, row, label, key):
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=4)
+        percent = software_dimming_slider_percent(self.config_data[key])
+        value = tk.DoubleVar(value=percent)
+        value_label = tk.StringVar(value=format_software_dimming_percent(percent))
+        self.vars[key] = value
+        self.dimming_value_labels[key] = value_label
+
+        slider = ttk.Scale(
+            parent,
+            from_=MIN_SOFTWARE_DIMMING_PERCENT,
+            to=MAX_SOFTWARE_DIMMING_PERCENT,
+            orient="horizontal",
+            variable=value,
+            command=lambda raw, slider_key=key, label_var=value_label: self._on_dimming_slider_move(
+                slider_key,
+                label_var,
+                raw,
+            ),
+        )
+        slider.grid(row=row, column=1, sticky="ew", padx=(12, 8), pady=4)
+        slider.bind(
+            "<ButtonRelease-1>",
+            lambda _event, slider_key=key, label_var=value_label: self._commit_dimming_slider(
+                slider_key,
+                label_var,
+            ),
+        )
+        slider.bind(
+            "<KeyRelease>",
+            lambda _event, slider_key=key, label_var=value_label: self._commit_dimming_slider(
+                slider_key,
+                label_var,
+            ),
+        )
+        self.dimming_sliders[key] = slider
+        ttk.Label(parent, textvariable=value_label, width=11).grid(row=row, column=2, sticky="w", pady=4)
+
+    def _on_dimming_slider_move(self, key: str, value_label: tk.StringVar, raw_value) -> None:
+        del key
+        value_label.set(format_software_dimming_percent(raw_value))
+
+    def _commit_dimming_slider(self, key: str, value_label: tk.StringVar) -> None:
+        percent = software_dimming_slider_percent(self.vars[key].get())
+        self.vars[key].set(percent)
+        value_label.set(format_software_dimming_percent(percent))
+        self.config_data[key] = percent
+        save_config(self.config_data)
+
+        profile_id = profile_id_for_software_dimming_key(key)
+        if profile_id is None:
+            return
+        self.log(f"OK - Software dimming: {profile_label(profile_id)} saved at {format_software_dimming_percent(percent)}.")
+        if profile_id != self.current_profile or not bool(self.vars["software_dimming"].get()) or self.running:
+            return
+
+        self.dimming_preview_generation += 1
+        generation = self.dimming_preview_generation
+        if self.dimming_preview_after_id is not None:
+            self.after_cancel(self.dimming_preview_after_id)
+        self.dimming_preview_after_id = self.after(
+            150,
+            lambda: self._start_dimming_preview(profile_id, percent, generation),
+        )
+
+    def _start_dimming_preview(self, profile_id: str, percent: int, generation: int) -> None:
+        self.dimming_preview_after_id = None
+        if (
+            generation != self.dimming_preview_generation
+            or profile_id != self.current_profile
+            or not bool(self.vars["software_dimming"].get())
+            or self.running
+        ):
+            return
+        threading.Thread(
+            target=self._apply_dimming_preview_in_thread,
+            args=(profile_id, percent, generation),
+            daemon=True,
+        ).start()
+
+    def _apply_dimming_preview_in_thread(self, profile_id: str, percent: int, generation: int) -> None:
+        result = set_software_dimming(percent)
+        self.ui_queue.put(
+            lambda: self._finish_dimming_preview(profile_id, percent, generation, result)
+        )
+
+    def _finish_dimming_preview(
+        self,
+        profile_id: str,
+        percent: int,
+        generation: int,
+        result: StepResult,
+    ) -> None:
+        if generation != self.dimming_preview_generation:
+            return
+        prefix = "OK" if result.ok else "WARN"
+        self.log(
+            f"{prefix} - Software dimming: {profile_label(profile_id)} live preview "
+            f"set to {format_software_dimming_percent(percent)}. {result.message}"
+        )
+
     def _refresh_button(self):
         if self.running and self.busy_target_profile is not None:
             self.mode_label.configure(text=profile_change_status_text(self.busy_target_profile))
@@ -2619,7 +2757,10 @@ def self_test() -> int:
     assert build_dimmed_gamma_ramp_values([0, 1000, 65535], 25) == [0, 250, 16384]
     assert build_dimmed_gamma_table_values([0.0, 0.5, 1.0], 25) == [0.0, 0.125, 0.25]
     assert parse_flux_run_value(r'"C:\Users\me\AppData\Local\FluxSoftware\Flux\flux.exe" /noshow')
-    assert APP_VERSION == "0.11.1"
+    assert APP_VERSION == "0.12.0"
+    assert software_dimming_slider_percent(24.6) == 25
+    assert format_software_dimming_percent(100) == "100% (off)"
+    assert profile_id_for_software_dimming_key("night_software_dimming") == "night"
     assert "reopen_chrome_after_flag" in load_config()
     assert "restore_chrome_pages" in load_config()
     assert "battery_optimization" in load_config()
@@ -2804,12 +2945,16 @@ def macos_gui_smoke_test() -> int:
         checks["window_exists"] = bool(app.winfo_exists())
         checks["window_visible"] = bool(app.winfo_viewable())
         checks["window_title"] = app.title()
+        checks["dimming_sliders"] = len(app.dimming_sliders)
+        checks["dimming_slider_labels"] = len(app.dimming_value_labels)
         checks["tray_started"] = bool(app.tray_started)
         checks["tray_visible"] = bool(app.tray_icon is not None and app.tray_icon.visible)
         result["ok"] = (
             checks["window_exists"]
             and checks["window_visible"]
             and checks["window_title"] == f"{APP_NAME} {APP_VERSION}"
+            and checks["dimming_sliders"] == len(PROFILE_ORDER)
+            and checks["dimming_slider_labels"] == len(PROFILE_ORDER)
             and checks["tray_started"]
             and checks["tray_visible"]
         )
